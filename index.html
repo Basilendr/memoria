@@ -1335,7 +1335,9 @@ const Analyseur = {
       candidats.push({
         titre: sujet.charAt(0).toUpperCase() + sujet.slice(1),
         type: "definition",
-        question: `Qu'est-ce que ${/^[aeiouéèh]/i.test(sujet) ? "l'" : "le/la "}${sujet} ?`,
+        // « le/la » (au lieu de deviner un genre qu'on ne connaît pas) sonnait
+        // mécanique et peu naturel comme question posée à l'utilisateur.
+        question: `Qu'est-ce que « ${sujet} » ?`,
         reponse: phrase,
         elements: Analyseur.extraireElements(phrase),
         score: 8 + Math.min(4, sujet.split(" ").length),
@@ -2677,7 +2679,7 @@ const PageCartesRapides = {
       notionsCreees.push(doc);
     }
     Toast.succes(`${notionsCreees.length} carte${notionsCreees.length>1?"s":""} ajoutée${notionsCreees.length>1?"s":""} à « ${cours.titre} ».`);
-    if (demarrerSession) PageSession.demarrer("apprendre", { notions: notionsCreees, coursId: cours.id });
+    if (demarrerSession) PageSession.demarrerApprendre({ notions: notionsCreees, coursId: cours.id });
     else Routeur.aller(`cours/${cours.id}`);
   },
 };
@@ -2805,7 +2807,11 @@ const PageCoursDetail = {
     PageCoursDetail.rendreOnglet(cours, chapitres, notions);
     PageCoursDetail.attacherOptions(principal, cours);
     principal.querySelectorAll("[data-onglet]").forEach(b => b.addEventListener("click", () => { PageCoursDetail.onglet = b.dataset.onglet; PageCoursDetail.rendre({ id }); }));
-    principal.querySelectorAll("[data-session]").forEach(b => b.addEventListener("click", () => PageSession.demarrer(b.dataset.session, { coursId: cours.id })));
+    principal.querySelectorAll("[data-session]").forEach(b => b.addEventListener("click", () => {
+      const m = b.dataset.session;
+      if (m === "apprendre") PageSession.demarrerApprendre({ coursId: cours.id });
+      else PageSession.demarrer(m, { coursId: cours.id });
+    }));
   },
 
   rendreOnglet(cours, chapitres, notions){
@@ -3005,19 +3011,48 @@ const PageNotion = {
 /* ==================== G6. SESSION D'EXERCICES ==================== */
 const PageSession = {
   file: [], index: 0, mode: "", coursId: null, stats: null, exerciceActuel: null, indiceNiveau: 0, decouverteVues: new Set(),
-  etatDrill: {}, totalDrill: 0, dossierValidationCible: null,
+  etatDrill: {}, totalDrill: 0, dossierValidationCible: null, modePedagogique: false,
 
-  // "apprendre" (notions neuves) et "interrogation" (un dossier entier, sans tenir compte
-  // des dates dues) partagent le même moteur "drill" : on boucle sur CHAQUE notion avec des
-  // exercices variés jusqu'à ce que l'utilisateur dise "je connais", auquel cas une
-  // réécriture complète sert de confirmation finale — une seule bonne réponse ne suffit
-  // jamais (§64 : ne pas laisser 100% sur un simple QCM).
-  estDrill(){ return PageSession.mode === "apprendre" || PageSession.mode === "interrogation"; },
+  // "apprendre" (notions neuves), "apprentissage" (les mêmes notions neuves, mais en mode
+  // pédagogique très ralenti — voir plus bas) et "interrogation" (un dossier entier, sans
+  // tenir compte des dates dues) partagent le même moteur "drill" : on boucle sur CHAQUE
+  // notion avec des exercices variés jusqu'à ce que l'utilisateur dise "je connais", auquel
+  // cas une réécriture complète sert de confirmation finale — une seule bonne réponse ne
+  // suffit jamais (§64 : ne pas laisser 100% sur un simple QCM).
+  estDrill(){ return PageSession.mode === "apprendre" || PageSession.mode === "apprentissage" || PageSession.mode === "interrogation"; },
+
+  // Point d'entrée commun à tous les boutons "Apprendre" : on demande d'abord si
+  // l'utilisateur veut le format habituel (rapide, existant, inchangé) ou le format
+  // pédagogique ralenti — plutôt que de trancher à sa place.
+  demarrerApprendre(opts = {}){
+    Modale.ouvrir(`
+      <div class="entete-modale"><h3>Réviser ou apprendre ?</h3></div>
+      <p class="texte-2 mb-md">Comment veux-tu travailler ces notions ?</p>
+      <div class="flex-col gap-sm">
+        <button type="button" class="bouton bouton-contour" style="text-align:left;height:auto;padding:var(--espace-md);white-space:normal" data-choix="apprendre">
+          <div class="texte-semi">${icono("cerveau","icone-sm")} Réviser rapidement</div>
+          <div class="texte-2 texte-petit mt-xs">Le format habituel : des exercices variés qui s'enchaînent vite.</div>
+        </button>
+        <button type="button" class="bouton bouton-primaire" style="text-align:left;height:auto;padding:var(--espace-md);white-space:normal" data-choix="apprentissage">
+          <div class="texte-semi">${icono("livre_ouvert","icone-sm")} Apprendre en profondeur</div>
+          <div class="texte-2 texte-petit mt-xs" style="opacity:.9">Plus posé : on prend le temps, avec des relectures et une progression en douceur.</div>
+        </button>
+      </div>
+      <button class="bouton bouton-fantome bouton-large mt-md" data-fermer>Annuler</button>
+    `, { classe: "modale-formulaire" });
+    const modaleEl = Modale.pile[Modale.pile.length - 1].el;
+    modaleEl.querySelector("[data-fermer]").addEventListener("click", () => Modale.fermer());
+    modaleEl.querySelectorAll("[data-choix]").forEach(b => b.addEventListener("click", () => {
+      const mode = b.dataset.choix;
+      Modale.fermer();
+      PageSession.demarrer(mode, opts);
+    }));
+  },
 
   demarrer(mode, opts = {}){
     let base = opts.notions || (opts.coursId ? Selecteurs.notionsDeCours(opts.coursId) : Selecteurs.toutesNotionsValidees());
     let notions;
-    if (mode === "apprendre") notions = base.filter(n => n.progression.etapeIndex === 0);
+    if (mode === "apprendre" || mode === "apprentissage") notions = base.filter(n => n.progression.etapeIndex === 0);
     else if (mode === "interrogation") notions = base;
     else if (mode === "reviser") notions = Revision.fileDeRevision(base);
     else if (mode === "rapide") notions = Revision.choisirPourDuree(opts.minutes || 10, base);
@@ -3025,18 +3060,22 @@ const PageSession = {
     else notions = base;
 
     if (!notions.length) {
-      const message = mode === "apprendre" ? "Aucune nouvelle notion à découvrir." : mode === "interrogation" ? "Ce dossier ne contient aucune notion." : "Rien à réviser pour le moment !";
+      const message = (mode === "apprendre" || mode === "apprentissage") ? "Aucune nouvelle notion à découvrir." : mode === "interrogation" ? "Ce dossier ne contient aucune notion." : "Rien à réviser pour le moment !";
       Toast.afficher(message, "info");
       Routeur.aller(opts.coursId ? `cours/${opts.coursId}` : "reviser");
       return;
     }
-    PageSession.file = Utils.melanger(notions).map(n => n.id).slice(0, mode === "reviser" || mode === "apprendre" ? 30 : notions.length);
+    // En mode pédagogique on prend le temps : peu de notions à la fois (8) plutôt que 30,
+    // pour ne jamais donner l'impression d'une liste interminable.
+    const plafond = mode === "apprentissage" ? 8 : (mode === "reviser" || mode === "apprendre") ? 30 : notions.length;
+    PageSession.file = Utils.melanger(notions).map(n => n.id).slice(0, plafond);
     PageSession.index = 0; PageSession.mode = mode; PageSession.coursId = opts.coursId || null;
     PageSession.decouverteVues = new Set();
+    PageSession.modePedagogique = mode === "apprentissage";
     PageSession.stats = { debut: Date.now(), reussites: 0, echecs: 0, partiels: 0, aRetravailler: [], notionsMaitrisees: 0 };
     PageSession.etatDrill = {}; PageSession.totalDrill = 0; PageSession.dossierValidationCible = null;
     if (PageSession.estDrill()) {
-      PageSession.file.forEach(id => { PageSession.etatDrill[id] = { typesUtilises: new Set(), demandeReecriture: false }; });
+      PageSession.file.forEach(id => { PageSession.etatDrill[id] = { typesUtilises: new Set(), demandeReecriture: false, transitionVue: false, recapVu: false }; });
       PageSession.totalDrill = PageSession.file.length;
       if (mode === "interrogation") PageSession.dossierValidationCible = opts.chapitreId ? { type: "chapitres", id: opts.chapitreId } : opts.coursId ? { type: "cours", id: opts.coursId } : null;
     }
@@ -3062,8 +3101,13 @@ const PageSession = {
     const id = PageSession.file[PageSession.index];
     const notion = Selecteurs.notion(id);
     if (!notion || notion.statutValidation !== "gardee") { PageSession.file.splice(PageSession.index, 1); delete PageSession.etatDrill[id]; PageSession.rendreDrill(); return; }
-    if (PageSession.mode === "apprendre" && notion.progression.etapeIndex === 0 && !PageSession.decouverteVues.has(id)) { PageSession.rendreDecouverte(notion); return; }
+    if ((PageSession.mode === "apprendre" || PageSession.mode === "apprentissage") && notion.progression.etapeIndex === 0 && !PageSession.decouverteVues.has(id)) { PageSession.rendreDecouverte(notion); return; }
     const etat = PageSession.etatDrill[id];
+    // Mode pédagogique : deux pauses en plus du drill habituel — une transition avant le
+    // tout premier exercice (pour ne pas enchaîner brutalement après la découverte), et un
+    // récapitulatif complet juste avant la réécriture finale (le moment le plus exigeant).
+    if (PageSession.modePedagogique && !etat.transitionVue) { PageSession.rendreTransition(notion, etat); return; }
+    if (PageSession.modePedagogique && etat.demandeReecriture && !etat.recapVu) { PageSession.rendreRecapFinal(notion, etat); return; }
     const type = etat.demandeReecriture ? "reecriture" : PageSession.choisirTypeDrill(notion, etat);
     PageSession.exerciceActuel = Moteur.genererExercice(notion, type);
     etat.typesUtilises.add(PageSession.exerciceActuel.type);
@@ -3073,12 +3117,16 @@ const PageSession = {
 
   // Ne répète jamais un type déjà vu pour CETTE notion tant qu'il en reste un nouveau à
   // essayer (c'est précisément ce qui manquait : avant, une notion neuve ne recevait
-  // jamais qu'un seul QCM avant de passer à la suivante).
+  // jamais qu'un seul QCM avant de passer à la suivante). En mode pédagogique, l'ordre
+  // n'est en plus jamais mélangé : on part toujours du plus facile (reconnaissance) vers
+  // le plus dur (réponse libre), pour ne jamais tomber sur l'exercice le plus exigeant en
+  // tout premier — exactement ce qui rendait le mode "apprendre" habituel trop rude.
   choisirTypeDrill(notion, etat){
     const ordre = ["qcm", "vrai_faux", "texte_trous", "association", "ordre", "reponse_libre"];
     let candidats = ordre.filter(t => !etat.typesUtilises.has(t));
     if (!candidats.length) candidats = ordre;
-    for (const t of Utils.melanger(candidats)) {
+    const sequence = PageSession.modePedagogique ? candidats : Utils.melanger(candidats);
+    for (const t of sequence) {
       if (Moteur.genererExercice(notion, t).type === t) return t;
     }
     return "reponse_libre";
@@ -3107,18 +3155,58 @@ const PageSession = {
 
   rendreDecouverte(notion){
     const principal = document.getElementById("contenu-principal");
+    const pedagogique = PageSession.modePedagogique;
     principal.innerHTML = PageSession.enveloppe(`
       <div class="carte-question texte-centre">
         <span class="badge badge-neutre" style="align-self:center">Nouvelle notion</span>
         <h2 class="mt-md">${Utils.echapperHtml(notion.titre)}</h2>
-        <p class="texte-2 mt-sm">Essaie de retenir les éléments suivants :</p>
+        <p class="texte-2 mt-sm">${pedagogique ? "Prends vraiment le temps de bien lire — relis plusieurs fois si besoin, rien ne presse." : "Essaie de retenir les éléments suivants :"}</p>
         <ul class="flex-col gap-xs mt-md" style="text-align:left;max-width:340px;margin:0 auto">
           ${(notion.elements?.length ? notion.elements : [notion.reponse]).map(e => `<li class="flex items-centre gap-sm">${icono("coche","icone-sm")}<span>${Utils.echapperHtml(e)}</span></li>`).join("")}
         </ul>
         <p class="texte-2 texte-petit mt-md">${Utils.echapperHtml(notion.reponse)}</p>
-        <button class="bouton bouton-primaire bouton-lg mt-lg" data-a-toi>À toi !</button>
+        <button class="bouton bouton-primaire bouton-lg mt-lg" data-a-toi>${pedagogique ? "J'ai bien lu, je suis prêt(e)" : "À toi !"}</button>
       </div>`);
     principal.querySelector("[data-a-toi]").addEventListener("click", () => { PageSession.decouverteVues.add(notion.id); PageSession.rendre(); });
+  },
+
+  // Pause explicite entre la découverte et le premier exercice, uniquement en mode
+  // pédagogique — annonce le déroulé à venir plutôt que d'enchaîner brutalement sur un
+  // exercice noté, ce qui donnait l'impression d'un examen surprise juste après la lecture.
+  rendreTransition(notion, etat){
+    const principal = document.getElementById("contenu-principal");
+    principal.innerHTML = PageSession.enveloppe(`
+      <div class="carte-question texte-centre">
+        <span class="badge badge-neutre" style="align-self:center">${icono("livre_ouvert","icone-xs")} Apprentissage en profondeur</span>
+        <h2 class="mt-md">On y va doucement</h2>
+        <p class="texte-2 mt-sm">Pour « ${Utils.echapperHtml(notion.titre)} », voici comment ça va se passer :</p>
+        <ul class="flex-col gap-xs mt-md" style="text-align:left;max-width:340px;margin:0 auto">
+          <li class="flex items-centre gap-sm">${icono("coche","icone-sm")}<span>Des exercices variés, du plus simple au plus difficile</span></li>
+          <li class="flex items-centre gap-sm">${icono("coche","icone-sm")}<span>Une correction détaillée après chacun, sans pénalité</span></li>
+          <li class="flex items-centre gap-sm">${icono("coche","icone-sm")}<span>Un récapitulatif avant le test final de mémoire</span></li>
+        </ul>
+        <button class="bouton bouton-primaire bouton-lg mt-lg" data-continuer>Commencer les exercices</button>
+      </div>`);
+    principal.querySelector("[data-continuer]").addEventListener("click", () => { etat.transitionVue = true; PageSession.rendre(); });
+  },
+
+  // Récapitulatif complet juste avant la réécriture finale — c'est l'étape la plus dure du
+  // drill (tout redonner de mémoire), donc en mode pédagogique on offre une dernière
+  // relecture ciblée juste avant, plutôt que d'enchaîner directement dessus.
+  rendreRecapFinal(notion, etat){
+    const principal = document.getElementById("contenu-principal");
+    principal.innerHTML = PageSession.enveloppe(`
+      <div class="carte-question texte-centre">
+        <span class="badge badge-vert" style="align-self:center">${icono("coche_cercle","icone-xs")} Récapitulatif</span>
+        <h2 class="mt-md">${Utils.echapperHtml(notion.titre)}</h2>
+        <p class="texte-2 mt-sm">Dernière relecture avant le grand test — tu vas devoir tout réécrire de mémoire juste après.</p>
+        <ul class="flex-col gap-xs mt-md" style="text-align:left;max-width:340px;margin:0 auto">
+          ${(notion.elements?.length ? notion.elements : [notion.reponse]).map(e => `<li class="flex items-centre gap-sm">${icono("coche","icone-sm")}<span>${Utils.echapperHtml(e)}</span></li>`).join("")}
+        </ul>
+        <p class="texte-2 texte-petit mt-md">${Utils.echapperHtml(notion.reponse)}</p>
+        <button class="bouton bouton-primaire bouton-lg mt-lg" data-continuer>Je suis prêt(e), je réécris tout</button>
+      </div>`);
+    principal.querySelector("[data-continuer]").addEventListener("click", () => { etat.recapVu = true; PageSession.rendre(); });
   },
 
   rendreExercice(notion, exercice){
@@ -3340,10 +3428,17 @@ const PageSession = {
   // exercice, même notion, plus tard dans la rotation) · "maitrise" (réécriture réussie :
   // la notion sort du dossier en cours) · "recommencer" (réécriture ratée : retour à
   // l'entraînement normal, on redonne sa chance plus tard).
+  //
+  // En mode pédagogique, "plus tard dans la rotation" ne veut rien dire : on reste
+  // volontairement sur LA MÊME notion jusqu'à ce qu'elle soit maîtrisée, au lieu de faire
+  // tourner tout le lot en rond — c'est justement ce mélange permanent de notions qui
+  // donnait l'impression d'aller trop vite, en ne laissant jamais le temps de se concentrer
+  // sur une seule chose à la fois.
   async resoudreDrill(notion, exercice, resultat, action){
     const confiance = resultat.correct === true ? (action === "connais" ? "facile" : "savais") : resultat.correct === "partiel" ? "hesitation" : "aucune";
     await PageSession.enregistrerResultat(notion, exercice, resultat, confiance);
     const etat = PageSession.etatDrill[notion.id];
+    const pedagogique = PageSession.modePedagogique;
 
     if (action === "maitrise") {
       PageSession.stats.notionsMaitrisees = (PageSession.stats.notionsMaitrisees || 0) + 1;
@@ -3353,13 +3448,14 @@ const PageSession = {
       Toast.succes(`« ${notion.titre} » maîtrisée !`);
     } else if (action === "recommencer") {
       etat.demandeReecriture = false;
+      etat.recapVu = false; // on remontrera le récapitulatif avant la prochaine tentative de réécriture
       PageSession.stats.aRetravailler.push(notion.id);
-      PageSession.index = PageSession.file.length ? (PageSession.index + 1) % PageSession.file.length : 0;
+      if (!pedagogique) PageSession.index = PageSession.file.length ? (PageSession.index + 1) % PageSession.file.length : 0;
     } else if (action === "connais") {
       etat.demandeReecriture = true; // reteste la même notion tout de suite, avec une réécriture cette fois
     } else {
       if (resultat.correct !== true) PageSession.stats.aRetravailler.push(notion.id);
-      PageSession.index = PageSession.file.length ? (PageSession.index + 1) % PageSession.file.length : 0;
+      if (!pedagogique) PageSession.index = PageSession.file.length ? (PageSession.index + 1) % PageSession.file.length : 0;
     }
     PageSession.rendre();
   },
@@ -3659,7 +3755,7 @@ const PageReviser = {
       </div>
     `;
     principal.querySelector('[data-mode="reviser"]')?.addEventListener("click", () => PageSession.demarrer("reviser"));
-    principal.querySelector('[data-mode="apprendre"]')?.addEventListener("click", () => PageSession.demarrer("apprendre"));
+    principal.querySelector('[data-mode="apprendre"]')?.addEventListener("click", () => PageSession.demarrerApprendre());
     principal.querySelectorAll("[data-rapide]").forEach(b => b.addEventListener("click", () => PageSession.demarrer("rapide", { minutes: Number(b.dataset.rapide) })));
   },
   rendreErreurs(){

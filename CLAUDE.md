@@ -95,6 +95,18 @@ sa progression repliée dans un champ `progression`), l'historique et les sessio
   tableau `reponses` (celui qu'on vient de `push`), **pas** la position dans le tableau `cibles`
   de départ — si un mot-cible ne matche pas dans le texte (accent, forme différente), les deux
   indices divergent et un trou affiche littéralement son numéro au lieu d'un champ de saisie.
+- **Mode "apprentissage" (apprendre en profondeur)** : à chaque point d'entrée qui lançait
+  directement `PageSession.demarrer("apprendre", …)` (Cartes rapides, page d'un cours, "Découvrir
+  de nouvelles notions"), on demande maintenant via `PageSession.demarrerApprendre(opts)` si
+  l'utilisateur veut réviser rapidement (mode `"apprendre"`, **strictement inchangé**) ou apprendre
+  en profondeur (nouveau mode `"apprentissage"`). Les deux partagent le même moteur "drill"
+  (`estDrill()`), mais `PageSession.modePedagogique` active trois différences ciblées : l'ordre des
+  types d'exercice n'est jamais mélangé (`choisirTypeDrill`, du plus facile — QCM — au plus dur —
+  réponse libre), on reste sur la même notion tant qu'elle n'est pas maîtrisée au lieu de faire
+  tourner tout le lot (`resoudreDrill`), et deux écrans de pause s'ajoutent (`rendreTransition`
+  avant le premier exercice, `rendreRecapFinal` avant la réécriture de confirmation) — c'est
+  directement la réponse à un retour utilisateur : le mode "apprendre" habituel donnait l'impression
+  d'aller trop vite et d'être trop dur pour une vraie première découverte.
 
 ## Pièges rencontrés
 
