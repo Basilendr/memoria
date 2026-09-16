@@ -1218,6 +1218,32 @@ const Store = {
     }
     await deleteDoc(doc(db, "users", Etat.uid));
   },
+
+  // Regroupe les matières au nom identique (accents/casse ignorés) : garde la plus
+  // ancienne, réassigne ses cours à la conservée puis supprime les autres. Renvoie
+  // le nombre de doublons supprimés.
+  async fusionnerMatieresEnDouble(){
+    const groupes = {};
+    for (const m of Etat.donnees.matieres) {
+      const cle = Utils.normaliserTexte(m.nom);
+      (groupes[cle] ||= []).push(m);
+    }
+    let supprimees = 0;
+    for (const cle in groupes) {
+      const liste = groupes[cle];
+      if (liste.length <= 1) continue;
+      liste.sort((a, b) => new Date(a.dateCreation) - new Date(b.dateCreation));
+      const [garder, ...doublons] = liste;
+      for (const d of doublons) {
+        for (const c of Etat.donnees.cours.filter(c => c.matiereId === d.id)) {
+          await Store.modifier("cours", c.id, { matiereId: garder.id });
+        }
+        await Store.supprimer("matieres", d.id);
+        supprimees++;
+      }
+    }
+    return supprimees;
+  },
 };
 
 // -- Sélecteurs génériques réutilisés partout --
@@ -2321,8 +2347,22 @@ function ouvrirGestionMatieres(){
       <button class="bouton-icone" data-suppr-matiere="${m.id}" aria-label="Supprimer">${icono("poubelle","icone-sm")}</button>
     </div>`).join("") || `<p class="texte-2 texte-petit">Aucune matière pour l'instant.</p>`;
 
+  const doublons = (() => {
+    const vus = new Set();
+    let n = 0;
+    for (const m of Etat.donnees.matieres) {
+      const cle = Utils.normaliserTexte(m.nom);
+      if (vus.has(cle)) n++; else vus.add(cle);
+    }
+    return n;
+  })();
+
   const html = `
     <div class="entete-modale"><h3>Mes matières</h3><button class="bouton-icone" data-fermer>${icono("croix")}</button></div>
+    ${doublons > 0 ? `<div class="carte mb-md" style="border-color:var(--attention)"><div class="flex items-centre justify-entre gap-sm flex-wrap">
+      <span class="texte-petit">${doublons} matière${doublons>1?"s":""} en double détectée${doublons>1?"s":""}</span>
+      <button class="bouton bouton-sm bouton-secondaire" data-fusionner>${icono("cible","icone-sm")} Fusionner les doublons</button>
+    </div></div>` : ""}
     <div data-liste-matieres>${rendreListe()}</div>
     <button class="bouton bouton-secondaire bouton-large mt-md" data-nouvelle-matiere>${icono("plus","icone-sm")} Nouvelle matière</button>
     <div class="pied-modale"><button class="bouton bouton-fantome" data-fermer>Fermer</button></div>
@@ -2332,14 +2372,29 @@ function ouvrirGestionMatieres(){
   // Re-rend la page COURANTE (pas forcément "Mes cours" : ce gestionnaire de matières
   // s'ouvre aussi depuis "Nouveau cours" et "Cartes rapides" quand aucune matière
   // n'existe encore) — Routeur.gerer() rejoue simplement le handler de la route active.
-  const rafraichir = () => { modaleEl.querySelector("[data-liste-matieres]").innerHTML = rendreListe(); attacherActions(); Routeur.gerer(); };
+  const rafraichir = () => { Modale.fermer(); ouvrirGestionMatieres(); };
   function attacherActions(){
     modaleEl.querySelectorAll("[data-fermer]").forEach(b => b.addEventListener("click", () => Modale.fermer()));
+    modaleEl.querySelector("[data-fusionner]")?.addEventListener("click", async () => {
+      const bouton = modaleEl.querySelector("[data-fusionner]");
+      bouton.disabled = true; bouton.textContent = "Fusion en cours...";
+      const n = await Store.fusionnerMatieresEnDouble();
+      Toast.succes(`${n} matière${n>1?"s":""} en double fusionnée${n>1?"s":""}.`);
+      rafraichir();
+    });
     modaleEl.querySelector("[data-nouvelle-matiere]").onclick = () => {
       ouvrirFormulaire({
         titre: "Nouvelle matière",
         champs: [{ cle: "nom", label: "Nom", type: "texte", requis: true, placeholder: "Ex. Mathématiques" }, { cle: "couleur", label: "Couleur", type: "couleur" }],
-        onValider: async (v) => { await Store.ajouter("matieres", { nom: v.nom, couleur: v.couleur, icone: "livre" }); rafraichir(); },
+        onValider: async (v) => {
+          const nomNorm = Utils.normaliserTexte(v.nom);
+          if (Etat.donnees.matieres.some(m => Utils.normaliserTexte(m.nom) === nomNorm)) {
+            throw new Error(`« ${v.nom} » existe déjà — pas besoin d'en recréer une.`);
+          }
+          await Store.ajouter("matieres", { nom: v.nom, couleur: v.couleur, icone: "livre" });
+          Toast.succes("Matière ajoutée.");
+          rafraichir();
+        },
       });
     };
     modaleEl.querySelectorAll("[data-editer-matiere]").forEach(b => b.onclick = () => {
@@ -2477,8 +2532,10 @@ const PageCoursForm = {
 // Apprendre sans passer par un cours entier : l'utilisateur tape directement des paires
 // terme/définition, qui deviennent des notions "gardee" immédiatement (pas d'étape
 // d'analyse ni de validation — il n'y a rien à détecter, tout est déjà structuré).
+const NOUVEAU = "__nouveau__";
 const PageCartesRapides = {
   fiches: [{ terme: "", definition: "" }],
+  selection: { matiereId: null, dossierId: NOUVEAU, chapitreId: NOUVEAU },
 
   rendre(){
     const principal = document.getElementById("contenu-principal");
@@ -2488,6 +2545,7 @@ const PageCartesRapides = {
       return;
     }
     PageCartesRapides.fiches = [{ terme: "", definition: "" }];
+    PageCartesRapides.selection = { matiereId: Etat.donnees.matieres[0].id, dossierId: NOUVEAU, chapitreId: NOUVEAU };
     PageCartesRapides.afficher();
   },
 
@@ -2497,11 +2555,9 @@ const PageCartesRapides = {
       <div style="max-width:640px;margin:0 auto">
         <a href="#/cours" class="texte-2 texte-petit flex items-centre gap-xs mb-md">${icono("fleche_gauche","icone-xs")} Retour</a>
         <h1 class="mb-sm">Cartes rapides</h1>
-        <p class="texte-2 mb-lg">Pas besoin d'un cours entier : donne directement des termes et leurs définitions, Memoria en fait des révisions tout de suite.</p>
-        <div class="rangee-champs">
-          <div class="groupe-champ"><label>Matière</label><select class="champ" id="cr-matiere">${Etat.donnees.matieres.map(m => `<option value="${m.id}">${Utils.echapperHtml(m.nom)}</option>`).join("")}</select></div>
-          <div class="groupe-champ"><label>Titre (facultatif)</label><input class="champ" type="text" id="cr-titre" placeholder="Ex. Vocabulaire d'anglais"></div>
-        </div>
+        <p class="texte-2 mb-lg">Pas besoin d'un cours entier : donne directement des termes et leurs définitions. Range-les dans un dossier et un chapitre existants pour t'entraîner plus tard sur toutes les définitions d'un coup, ou crée-en de nouveaux.</p>
+        <div class="groupe-champ"><label>Matière</label><select class="champ" id="cr-matiere">${Etat.donnees.matieres.map(m => `<option value="${m.id}" ${PageCartesRapides.selection.matiereId===m.id?"selected":""}>${Utils.echapperHtml(m.nom)}</option>`).join("")}</select></div>
+        <div id="crDossierConfig"></div>
         <div class="liste-fiches-rapides" id="crListe"></div>
         <button class="bouton bouton-secondaire bouton-large mt-md" id="cr-ajouter">${icono("plus","icone-sm")} Ajouter une autre carte</button>
         <div class="flex-col gap-sm mt-lg">
@@ -2512,13 +2568,58 @@ const PageCartesRapides = {
           <button class="bouton bouton-fantome" data-action="aller" data-route="cours">Annuler</button>
         </div>
       </div>`;
+    PageCartesRapides.rendreDossierConfig();
     PageCartesRapides.rendreListe();
+    document.getElementById("cr-matiere").addEventListener("change", (e) => {
+      PageCartesRapides.selection.matiereId = e.target.value;
+      PageCartesRapides.selection.dossierId = NOUVEAU;
+      PageCartesRapides.selection.chapitreId = NOUVEAU;
+      PageCartesRapides.rendreDossierConfig();
+    });
     document.getElementById("cr-ajouter").addEventListener("click", () => {
       PageCartesRapides.fiches.push({ terme: "", definition: "" });
       PageCartesRapides.rendreListe();
     });
     document.getElementById("cr-enregistrer").addEventListener("click", () => PageCartesRapides.enregistrer(false));
     document.getElementById("cr-apprendre").addEventListener("click", () => PageCartesRapides.enregistrer(true));
+  },
+
+  // Dossier = un cours existant (pour cette matière) ou "+ Nouveau dossier" ; une fois
+  // un dossier existant choisi, on propose pareil un chapitre existant ou "+ Nouveau
+  // chapitre" — c'est ce qui permet d'accumuler plusieurs lots de cartes dans le même
+  // dossier/chapitre au fil du temps, plutôt que de repartir de zéro à chaque fois.
+  rendreDossierConfig(){
+    const zone = document.getElementById("crDossierConfig");
+    const { matiereId, dossierId, chapitreId } = PageCartesRapides.selection;
+    const dossiers = Selecteurs.coursDeMatiere(matiereId);
+    const dossierExiste = dossiers.some(c => c.id === dossierId);
+    let html = `<div class="groupe-champ"><label>Dossier</label><select class="champ" id="cr-dossier">
+      <option value="${NOUVEAU}">+ Nouveau dossier</option>
+      ${dossiers.map(c => `<option value="${c.id}" ${dossierId===c.id?"selected":""}>${Utils.echapperHtml(c.titre)}</option>`).join("")}
+    </select></div>`;
+    if (!dossierExiste) {
+      html += `<div class="groupe-champ"><label>Nom du dossier (facultatif)</label><input class="champ" type="text" id="cr-titre" placeholder="Ex. Vocabulaire d'anglais"></div>`;
+    } else {
+      const chapitres = Selecteurs.chapitresDeCours(dossierId);
+      const chapitreExiste = chapitres.some(ch => ch.id === chapitreId);
+      html += `<div class="groupe-champ"><label>Chapitre</label><select class="champ" id="cr-chapitre">
+        <option value="${NOUVEAU}">+ Nouveau chapitre</option>
+        ${chapitres.map(ch => `<option value="${ch.id}" ${chapitreId===ch.id?"selected":""}>${Utils.echapperHtml(ch.titre)}</option>`).join("")}
+      </select></div>`;
+      if (!chapitreExiste) {
+        html += `<div class="groupe-champ"><label>Nom du chapitre (facultatif)</label><input class="champ" type="text" id="cr-chapitre-titre" placeholder="Ex. Chapitre 3"></div>`;
+      }
+    }
+    zone.innerHTML = html;
+    document.getElementById("cr-dossier").addEventListener("change", (e) => {
+      PageCartesRapides.selection.dossierId = e.target.value;
+      PageCartesRapides.selection.chapitreId = NOUVEAU;
+      PageCartesRapides.rendreDossierConfig();
+    });
+    document.getElementById("cr-chapitre")?.addEventListener("change", (e) => {
+      PageCartesRapides.selection.chapitreId = e.target.value;
+      PageCartesRapides.rendreDossierConfig();
+    });
   },
 
   rendreListe(){
@@ -2539,13 +2640,30 @@ const PageCartesRapides = {
 
   async enregistrer(demarrerSession){
     const matiereId = document.getElementById("cr-matiere").value;
-    const titreSaisi = document.getElementById("cr-titre").value.trim();
     const valides = PageCartesRapides.fiches.filter(f => f.terme.trim() && f.definition.trim());
     if (!valides.length) return Toast.erreur("Ajoute au moins un terme et sa définition.");
-    const titre = titreSaisi || `Cartes rapides — ${Utils.formaterDateCourte(new Date())}`;
-    const contenu = valides.map(f => `${f.terme} : ${f.definition}`).join("\n\n");
-    const cours = await Store.ajouter("cours", { titre, matiereId, contenu, favori: false, archive: false });
-    const chapitre = await Store.ajouter("chapitres", { coursId: cours.id, titre, ordre: 0 });
+
+    let { dossierId, chapitreId } = PageCartesRapides.selection;
+    let cours = Selecteurs.cours(dossierId);
+    const nouveauContenu = valides.map(f => `${f.terme} : ${f.definition}`).join("\n\n");
+
+    if (!cours) {
+      const titreSaisi = document.getElementById("cr-titre")?.value.trim();
+      const titre = titreSaisi || `Cartes rapides — ${Utils.formaterDateCourte(new Date())}`;
+      cours = await Store.ajouter("cours", { titre, matiereId, contenu: nouveauContenu, favori: false, archive: false });
+    } else {
+      // Un dossier existant reçoit un nouveau lot de cartes : on ajoute au contenu
+      // affiché dans "Lire le cours" plutôt que de l'écraser.
+      await Store.modifier("cours", cours.id, { contenu: `${cours.contenu}\n\n${nouveauContenu}` });
+    }
+
+    let chapitre = Selecteurs.chapitresDeCours(cours.id).find(ch => ch.id === chapitreId);
+    if (!chapitre) {
+      const titreChapitreSaisi = document.getElementById("cr-chapitre-titre")?.value.trim();
+      const ordre = Selecteurs.chapitresDeCours(cours.id).length;
+      chapitre = await Store.ajouter("chapitres", { coursId: cours.id, titre: titreChapitreSaisi || `Chapitre ${ordre + 1}`, ordre });
+    }
+
     const notionsCreees = [];
     for (const f of valides) {
       const terme = f.terme.trim(), definition = f.definition.trim();
@@ -2558,7 +2676,7 @@ const PageCartesRapides = {
       });
       notionsCreees.push(doc);
     }
-    Toast.succes(`${notionsCreees.length} carte${notionsCreees.length>1?"s":""} créée${notionsCreees.length>1?"s":""}.`);
+    Toast.succes(`${notionsCreees.length} carte${notionsCreees.length>1?"s":""} ajoutée${notionsCreees.length>1?"s":""} à « ${cours.titre} ».`);
     if (demarrerSession) PageSession.demarrer("apprendre", { notions: notionsCreees, coursId: cours.id });
     else Routeur.aller(`cours/${cours.id}`);
   },
