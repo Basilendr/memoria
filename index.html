@@ -1914,10 +1914,20 @@ const Auth = {
       form?.addEventListener("submit", async (e) => {
         e.preventDefault();
         const bouton = form.querySelector('button[type="submit"]');
+        // Sans retour visuel, une connexion un peu lente (réseau, initialisation
+        // Firebase) donne l'impression que rien ne se passe — l'utilisateur clique
+        // plusieurs fois ou abandonne alors que ça fonctionne, juste pas instantanément.
+        const texteInitial = bouton.textContent;
         bouton.disabled = true;
+        bouton.textContent = "Connexion...";
         const donnees = Object.fromEntries(new FormData(form));
         try { await action(donnees); }
-        catch (err) { console.error("Échec du formulaire d'authentification :", err.code, err.message, err); Toast.erreur(err.message || "Une erreur est survenue."); bouton.disabled = false; }
+        catch (err) {
+          console.error("Échec du formulaire d'authentification :", err.code, err.message, err);
+          Toast.erreur(err.message || "Une erreur est survenue.");
+          bouton.disabled = false;
+          bouton.textContent = texteInitial;
+        }
       });
     };
     gerer(conteneur.querySelector("[data-form-connexion]"), async (d) => {
