@@ -170,7 +170,7 @@ img{ max-width:100%; display:block; }
 .lien-saut{ position:absolute; left:-999px; top:0; background:var(--primaire); color:var(--sur-primaire); padding:.6rem 1rem; border-radius:0 0 var(--rayon-sm) 0; z-index:200; }
 .lien-saut:focus{ left:0; }
 
-.flex{ display:flex; }
+.flex{ display:flex; flex-wrap:wrap; }
 .flex-col{ display:flex; flex-direction:column; }
 .grille{ display:grid; }
 .items-centre{ align-items:center; }
@@ -399,9 +399,10 @@ select.champ{ appearance:none; background-image:url("data:image/svg+xml,%3Csvg x
 }
 @media (min-width:960px){ .nav-basse{ display:none; } }
 .item-nav-basse{
-  flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.2rem;
+  flex:1; min-width:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.2rem;
   color:var(--texte-3); font-size:.68rem; font-weight:600; position:relative;
 }
+.item-nav-basse span{ max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .item-nav-basse.actif{ color:var(--primaire); }
 
 .menu-plus{ position:fixed; inset:0; background:rgba(10,20,18,.5); z-index:90; display:flex; align-items:flex-end; }
@@ -2327,7 +2328,7 @@ const PageCours = {
     principal.innerHTML = `
       <div class="flex items-centre justify-entre flex-wrap gap-sm mb-md">
         <div class="recherche-entete">${icono("recherche","icone-sm")}<input type="search" placeholder="Rechercher un cours..." value="${Utils.echapperHtml(PageCours.filtres.recherche)}" data-recherche-cours></div>
-        <div class="flex gap-sm">
+        <div class="flex gap-sm flex-wrap">
           <button class="bouton bouton-contour" data-gerer-matieres>${icono("engrenage","icone-sm")} Matières</button>
           <button class="bouton bouton-secondaire" data-action="aller" data-route="cartes/nouveau">${icono("zap","icone-sm")} Cartes rapides</button>
           <button class="bouton bouton-primaire" data-action="aller" data-route="cours/nouveau">${icono("plus","icone-sm")} Nouveau cours</button>
@@ -2454,10 +2455,12 @@ const PageCartesRapides = {
         </div>
         <div class="liste-fiches-rapides" id="crListe"></div>
         <button class="bouton bouton-secondaire bouton-large mt-md" id="cr-ajouter">${icono("plus","icone-sm")} Ajouter une autre carte</button>
-        <div class="flex gap-sm mt-lg">
+        <div class="flex-col gap-sm mt-lg">
+          <div class="flex gap-sm flex-wrap">
+            <button class="bouton bouton-secondaire flex-1" id="cr-enregistrer">Enregistrer pour plus tard</button>
+            <button class="bouton bouton-primaire flex-1" id="cr-apprendre">${icono("cerveau","icone-sm")} Créer et apprendre</button>
+          </div>
           <button class="bouton bouton-fantome" data-action="aller" data-route="cours">Annuler</button>
-          <button class="bouton bouton-secondaire flex-1" id="cr-enregistrer">Enregistrer pour plus tard</button>
-          <button class="bouton bouton-primaire flex-1" id="cr-apprendre">${icono("cerveau","icone-sm")} Créer et apprendre</button>
         </div>
       </div>`;
     PageCartesRapides.rendreListe();
