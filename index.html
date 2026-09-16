@@ -670,7 +670,7 @@ select.champ{ appearance:none; background-image:url("data:image/svg+xml,%3Csvg x
 import { initializeApp } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-app.js";
 import {
   getAuth, onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword,
-  signOut, sendPasswordResetEmail, GoogleAuthProvider, signInWithPopup, updateProfile,
+  signOut, sendPasswordResetEmail, GoogleAuthProvider, signInWithRedirect, getRedirectResult, updateProfile,
   updatePassword, EmailAuthProvider, reauthenticateWithCredential, deleteUser
 } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-auth.js";
 import {
@@ -1808,6 +1808,18 @@ const Auth = {
 
   async demarrer(){
     if (!Etat.demo) {
+      // Capture une éventuelle erreur survenue pendant l'aller-retour de
+      // signInWithRedirect (ex. compte refusé) — sans ça, onAuthStateChanged ne fait
+      // rien et l'utilisateur reste sur l'écran de connexion sans aucune explication.
+      getRedirectResult(auth).catch((err) => {
+        console.error("Échec de la connexion Google (retour de redirection) :", err.code, err.message, err);
+        const messages = {
+          "auth/unauthorized-domain": "Ce domaine n'est pas autorisé dans Firebase (Authentication → Settings → Authorized domains).",
+          "auth/operation-not-allowed": "La connexion Google n'est pas activée dans Firebase (Authentication → Sign-in method).",
+          "auth/account-exists-with-different-credential": "Un compte existe déjà avec cet e-mail via une autre méthode de connexion.",
+        };
+        Toast.erreur(messages[err.code] || `Connexion Google impossible (${err.code || err.message}).`);
+      });
       onAuthStateChanged(auth, async (utilisateur) => {
         if (utilisateur) await Auth.surConnexion(utilisateur.uid, { email: utilisateur.email, prenom: utilisateur.displayName?.split(" ")[0] || "", photoURL: utilisateur.photoURL || null });
         else Auth.afficherEcranAuth();
@@ -1927,22 +1939,17 @@ const Auth = {
       Auth.afficherEcranAuth("connexion");
     });
     conteneur.querySelector("[data-google]")?.addEventListener("click", async () => {
+      // signInWithRedirect plutôt que signInWithPopup : la version popup se heurtait à
+      // un bug connu du SDK Firebase (IndexedDB fermée pendant l'échange avec la
+      // fenêtre popup, message "database is closing"), qui touche certains navigateurs
+      // et configurations de façon intermittente. La redirection complète (on quitte la
+      // page, Google authentifie, on revient) n'a pas ce problème — voir
+      // Auth.gererResultatRedirection() pour la suite du flux au retour.
       try {
-        const cred = await signInWithPopup(auth, new GoogleAuthProvider());
-        await Auth.surConnexion(cred.user.uid, { email: cred.user.email, prenom: cred.user.displayName?.split(" ")[0], photoURL: cred.user.photoURL });
+        await signInWithRedirect(auth, new GoogleAuthProvider());
       } catch (err) {
-        // Toujours logger l'erreur réelle : un message générique seul rend le
-        // diagnostic impossible depuis la console du navigateur.
-        console.error("Échec de la connexion Google :", err.code, err.message, err);
-        const messages = {
-          "auth/unauthorized-domain": "Ce domaine n'est pas autorisé dans Firebase (Authentication → Settings → Authorized domains).",
-          "auth/operation-not-allowed": "La connexion Google n'est pas activée dans Firebase (Authentication → Sign-in method).",
-          "auth/popup-blocked": "Le navigateur a bloqué la fenêtre de connexion — autorise les popups pour ce site.",
-          "auth/popup-closed-by-user": "Fenêtre de connexion fermée avant la fin.",
-          "auth/cancelled-popup-request": "Connexion annulée.",
-          "auth/account-exists-with-different-credential": "Un compte existe déjà avec cet e-mail via une autre méthode de connexion.",
-        };
-        Toast.erreur(messages[err.code] || `Connexion Google impossible (${err.code || err.message}).`);
+        console.error("Échec du lancement de la connexion Google :", err.code, err.message, err);
+        Toast.erreur("Connexion Google impossible pour l'instant.");
       }
     });
     conteneur.querySelector("[data-invite]")?.addEventListener("click", async () => {
