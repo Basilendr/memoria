@@ -678,16 +678,16 @@ import {
   collection, query, where, writeBatch
 } from "https://www.gstatic.com/firebasejs/12.17.1/firebase-firestore.js";
 
-// Configuration Firebase du projet "memoria" — à remplacer par la vraie config
-// (Console Firebase → Paramètres du projet → Vos applications → SDK). Tant que
-// apiKey reste "DEMO", l'app tourne entièrement en local (voir Store, section C).
+// Configuration Firebase du projet "memoria" (projet memoria-9d188). Tant que
+// apiKey reste "DEMO", l'app tourne entièrement en local (voir Store, section C) —
+// ce n'est plus le cas ici : Auth + Firestore réels sont actifs.
 const FIREBASE_CONFIG = {
-  apiKey: "DEMO",
-  authDomain: "",
-  projectId: "",
-  storageBucket: "",
-  messagingSenderId: "",
-  appId: "",
+  apiKey: "AIzaSyDP2mcDA1PW6dI2tYvc-dbIuV9MGNw9OwI",
+  authDomain: "memoria-9d188.firebaseapp.com",
+  projectId: "memoria-9d188",
+  storageBucket: "memoria-9d188.firebasestorage.app",
+  messagingSenderId: "171887940480",
+  appId: "1:171887940480:web:80433f84771afa233d2765",
 };
 
 const MODE_DEMO = !FIREBASE_CONFIG.apiKey || FIREBASE_CONFIG.apiKey === "DEMO";
