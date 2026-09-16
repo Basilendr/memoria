@@ -47,12 +47,16 @@ service cloud.firestore {
     }
 
     function profilValide(d) {
+      // dernierJourActif et styleApprentissage valent explicitement null tant que
+      // l'utilisateur n'a pas fait de session / choisi un style — texteFacultatif
+      // seul les aurait rejetés (null n'est pas une string), cassant la création de
+      // compte elle-même. D'où texteOuNulFacultatif ici, pas juste sur photoURL.
       return texteFacultatif(d, 'prenom', 100) && texteFacultatif(d, 'nom', 100)
         && texteFacultatif(d, 'email', 200) && texteOuNulFacultatif(d, 'photoURL', 300000)
         && nombreFacultatif(d, 'streak') && nombreFacultatif(d, 'xp')
         && boolFacultatif(d, 'rappelsActifs') && texteFacultatif(d, 'heureRappel', 10)
-        && boolFacultatif(d, 'onboardingFait') && texteFacultatif(d, 'styleApprentissage', 50)
-        && texteFacultatif(d, 'dateCreation', 50) && texteFacultatif(d, 'dernierJourActif', 50)
+        && boolFacultatif(d, 'onboardingFait') && texteOuNulFacultatif(d, 'styleApprentissage', 50)
+        && texteFacultatif(d, 'dateCreation', 50) && texteOuNulFacultatif(d, 'dernierJourActif', 50)
         && texteFacultatif(d, 'dernierRappelEnvoye', 50);
     }
     function matiereValide(d) {
