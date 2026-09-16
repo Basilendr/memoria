@@ -4036,6 +4036,16 @@ async function demarrer(){
   await Auth.demarrer();
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("sw.js").catch(() => {});
+    // Dès qu'une nouvelle version du service worker prend le contrôle (nouveau
+    // déploiement détecté), on recharge automatiquement — sans ça, un onglet déjà
+    // ouvert continue d'afficher une version figée tant qu'il n'est pas rechargé
+    // manuellement, ce qui ressemble exactement à "le site n'est jamais à jour".
+    let dejaRecharge = false;
+    navigator.serviceWorker.addEventListener("controllerchange", () => {
+      if (dejaRecharge) return;
+      dejaRecharge = true;
+      location.reload();
+    });
   }
 }
 demarrer();
