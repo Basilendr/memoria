@@ -2615,10 +2615,14 @@ const PageCoursDetail = {
         <div class="flex items-centre gap-lg flex-wrap">
           ${anneauProgression(moyenne, { taille: 72 })}
           <div class="flex-1">
-            <div class="flex gap-sm flex-wrap texte-petit texte-2 mb-sm"><span>${notions.length} notions</span>·<span>${chapitres.length} chapitre${chapitres.length>1?"s":""}</span>${dues.length ? `·<span style="color:var(--primaire);font-weight:700">${dues.length} à réviser</span>` : ""}</div>
+            <div class="flex gap-sm flex-wrap texte-petit texte-2 mb-sm">
+              <span>${notions.length} notions</span>·<span>${chapitres.length} chapitre${chapitres.length>1?"s":""}</span>${dues.length ? `·<span style="color:var(--primaire);font-weight:700">${dues.length} à réviser</span>` : ""}
+              ${cours.interrogationValideeLe ? `<span class="badge badge-vert">${icono("coche_cercle","icone-xs")} Dossier validé le ${Utils.formaterDateCourte(cours.interrogationValideeLe)}</span>` : ""}
+            </div>
             <div class="flex gap-sm flex-wrap">
               <button class="bouton bouton-primaire" data-session="apprendre">${icono("livre_ouvert","icone-sm")} Apprendre</button>
               <button class="bouton bouton-secondaire" data-session="reviser">${icono("cerveau","icone-sm")} Réviser</button>
+              <button class="bouton bouton-contour" data-session="interrogation">${icono("cible","icone-sm")} Interroge-moi sur tout</button>
             </div>
           </div>
         </div>
@@ -2661,7 +2665,7 @@ const PageCoursDetail = {
           const notionsChap = notions.filter(n => n.chapitreId === ch.id);
           const moy = notionsChap.length ? Math.round(notionsChap.reduce((s,n)=>s+n.progression.maitriseActuelle,0)/notionsChap.length) : 0;
           const statutDominant = notionsChap.length ? (moy>=75?"vert":moy>=50?"jaune":moy>=25?"orange":"rouge") : "rouge";
-          return `<div class="carte ligne-chapitre">${icono("livre","icone-sm")}<div class="flex-1"><div class="texte-semi">${Utils.echapperHtml(ch.titre)}</div><div class="texte-2 texte-petit">${notionsChap.length} notions</div></div>${barreProgressionHtml(moy)}<span class="texte-petit texte-semi" style="color:var(--${statutDominant==="vert"?"succes":statutDominant==="jaune"?"attention":statutDominant==="orange"?"attention":"danger"})">${moy}%</span></div>`;
+          return `<div class="carte ligne-chapitre">${icono("livre","icone-sm")}<div class="flex-1"><div class="texte-semi">${Utils.echapperHtml(ch.titre)}${ch.interrogationValideeLe ? ` ${icono("coche_cercle","icone-xs")}` : ""}</div><div class="texte-2 texte-petit">${notionsChap.length} notions</div></div>${barreProgressionHtml(moy)}<span class="texte-petit texte-semi" style="color:var(--${statutDominant==="vert"?"succes":statutDominant==="jaune"?"attention":statutDominant==="orange"?"attention":"danger"})">${moy}%</span>${chapitres.length>1 && notionsChap.length ? `<button type="button" class="bouton-icone" data-interroger-chapitre="${ch.id}" aria-label="Interroger sur ce chapitre">${icono("cible","icone-sm")}</button>` : ""}</div>`;
         }).join("")}
       </div>
       <h2 class="mb-sm">Notions (${notions.length})</h2>
@@ -2672,6 +2676,12 @@ const PageCoursDetail = {
           ${badgeStatut(n.progression.statut)}
         </a>`).join("")}
       </div>`;
+    zone.querySelectorAll("[data-interroger-chapitre]").forEach(b => b.addEventListener("click", (e) => {
+      e.preventDefault();
+      const chapitreId = b.dataset.interrogerChapitre;
+      const notionsChap = notions.filter(n => n.chapitreId === chapitreId);
+      PageSession.demarrer("interrogation", { notions: notionsChap, chapitreId });
+    }));
   },
 
   attacherOptions(principal, cours){
@@ -2828,31 +2838,48 @@ const PageNotion = {
 /* ==================== G6. SESSION D'EXERCICES ==================== */
 const PageSession = {
   file: [], index: 0, mode: "", coursId: null, stats: null, exerciceActuel: null, indiceNiveau: 0, decouverteVues: new Set(),
+  etatDrill: {}, totalDrill: 0, dossierValidationCible: null,
+
+  // "apprendre" (notions neuves) et "interrogation" (un dossier entier, sans tenir compte
+  // des dates dues) partagent le même moteur "drill" : on boucle sur CHAQUE notion avec des
+  // exercices variés jusqu'à ce que l'utilisateur dise "je connais", auquel cas une
+  // réécriture complète sert de confirmation finale — une seule bonne réponse ne suffit
+  // jamais (§64 : ne pas laisser 100% sur un simple QCM).
+  estDrill(){ return PageSession.mode === "apprendre" || PageSession.mode === "interrogation"; },
 
   demarrer(mode, opts = {}){
     let base = opts.notions || (opts.coursId ? Selecteurs.notionsDeCours(opts.coursId) : Selecteurs.toutesNotionsValidees());
     let notions;
     if (mode === "apprendre") notions = base.filter(n => n.progression.etapeIndex === 0);
+    else if (mode === "interrogation") notions = base;
     else if (mode === "reviser") notions = Revision.fileDeRevision(base);
     else if (mode === "rapide") notions = Revision.choisirPourDuree(opts.minutes || 10, base);
     else if (mode === "erreurs") notions = Revision.notionsFragiles(base);
     else notions = base;
 
     if (!notions.length) {
-      Toast.afficher(mode === "apprendre" ? "Aucune nouvelle notion à découvrir." : "Rien à réviser pour le moment !", "info");
+      const message = mode === "apprendre" ? "Aucune nouvelle notion à découvrir." : mode === "interrogation" ? "Ce dossier ne contient aucune notion." : "Rien à réviser pour le moment !";
+      Toast.afficher(message, "info");
       Routeur.aller(opts.coursId ? `cours/${opts.coursId}` : "reviser");
       return;
     }
-    PageSession.file = Utils.melanger(notions).map(n => n.id).slice(0, mode === "rapide" ? notions.length : 30);
+    PageSession.file = Utils.melanger(notions).map(n => n.id).slice(0, mode === "reviser" || mode === "apprendre" ? 30 : notions.length);
     PageSession.index = 0; PageSession.mode = mode; PageSession.coursId = opts.coursId || null;
     PageSession.decouverteVues = new Set();
-    PageSession.stats = { debut: Date.now(), reussites: 0, echecs: 0, partiels: 0, aRetravailler: [] };
+    PageSession.stats = { debut: Date.now(), reussites: 0, echecs: 0, partiels: 0, aRetravailler: [], notionsMaitrisees: 0 };
+    PageSession.etatDrill = {}; PageSession.totalDrill = 0; PageSession.dossierValidationCible = null;
+    if (PageSession.estDrill()) {
+      PageSession.file.forEach(id => { PageSession.etatDrill[id] = { typesUtilises: new Set(), demandeReecriture: false }; });
+      PageSession.totalDrill = PageSession.file.length;
+      if (mode === "interrogation") PageSession.dossierValidationCible = opts.chapitreId ? { type: "chapitres", id: opts.chapitreId } : opts.coursId ? { type: "cours", id: opts.coursId } : null;
+    }
     Routeur.aller("session/actif");
   },
 
   notionActuelle(){ return Selecteurs.notion(PageSession.file[PageSession.index]); },
 
   rendre(){
+    if (PageSession.estDrill()) { PageSession.rendreDrill(); return; }
     if (PageSession.index >= PageSession.file.length) { PageSession.terminer(); return; }
     const notion = PageSession.notionActuelle();
     if (!notion || notion.statutValidation !== "gardee") { PageSession.index++; PageSession.rendre(); return; }
@@ -2862,13 +2889,50 @@ const PageSession = {
     PageSession.rendreExercice(notion, PageSession.exerciceActuel);
   },
 
+  rendreDrill(){
+    if (!PageSession.file.length) { PageSession.terminer(); return; }
+    if (PageSession.index >= PageSession.file.length) PageSession.index = 0;
+    const id = PageSession.file[PageSession.index];
+    const notion = Selecteurs.notion(id);
+    if (!notion || notion.statutValidation !== "gardee") { PageSession.file.splice(PageSession.index, 1); delete PageSession.etatDrill[id]; PageSession.rendreDrill(); return; }
+    if (PageSession.mode === "apprendre" && notion.progression.etapeIndex === 0 && !PageSession.decouverteVues.has(id)) { PageSession.rendreDecouverte(notion); return; }
+    const etat = PageSession.etatDrill[id];
+    const type = etat.demandeReecriture ? "reecriture" : PageSession.choisirTypeDrill(notion, etat);
+    PageSession.exerciceActuel = Moteur.genererExercice(notion, type);
+    etat.typesUtilises.add(PageSession.exerciceActuel.type);
+    PageSession.indiceNiveau = 0;
+    PageSession.rendreExercice(notion, PageSession.exerciceActuel);
+  },
+
+  // Ne répète jamais un type déjà vu pour CETTE notion tant qu'il en reste un nouveau à
+  // essayer (c'est précisément ce qui manquait : avant, une notion neuve ne recevait
+  // jamais qu'un seul QCM avant de passer à la suivante).
+  choisirTypeDrill(notion, etat){
+    const ordre = ["qcm", "vrai_faux", "texte_trous", "association", "ordre", "reponse_libre"];
+    let candidats = ordre.filter(t => !etat.typesUtilises.has(t));
+    if (!candidats.length) candidats = ordre;
+    for (const t of Utils.melanger(candidats)) {
+      if (Moteur.genererExercice(notion, t).type === t) return t;
+    }
+    return "reponse_libre";
+  },
+
   enveloppe(contenuHtml){
-    const pct = Math.round((PageSession.index / PageSession.file.length) * 100);
+    let pct, compteur;
+    if (PageSession.estDrill()) {
+      const total = PageSession.totalDrill || PageSession.file.length || 1;
+      const faites = PageSession.stats.notionsMaitrisees || 0;
+      pct = Math.round((faites / total) * 100);
+      compteur = `${faites}/${total}`;
+    } else {
+      pct = Math.round((PageSession.index / PageSession.file.length) * 100);
+      compteur = `${PageSession.index+1}/${PageSession.file.length}`;
+    }
     return `<div class="enveloppe-session">
       <div class="entete-session">
         <button class="bouton-icone" data-action="aller" data-route="${PageSession.coursId ? "cours/"+PageSession.coursId : "reviser"}" aria-label="Quitter la session">${icono("croix")}</button>
         ${barreProgressionHtml(pct)}
-        <span class="texte-petit texte-2">${PageSession.index+1}/${PageSession.file.length}</span>
+        <span class="texte-petit texte-2">${compteur}</span>
       </div>
       ${contenuHtml}
     </div>`;
@@ -3051,21 +3115,39 @@ const PageSession = {
     } else {
       comparaison = `<div class="bloc-comparaison"><div><div class="etiquette">À retenir</div><p class="texte-petit">${Utils.echapperHtml(notion.reponse)}</p></div></div>`;
     }
-    zone.innerHTML = `<div class="panneau-correction ${classe}">
-      <div class="entete-correction ${classe}">${icono(classe==="correct"?"coche_cercle":classe==="partiel"?"info":"croix_cercle")}${titreCorrection}</div>
-      ${comparaison}
-      <div class="selecteur-confiance" data-confiance>
+
+    const estDrill = PageSession.estDrill();
+    const estConfirmation = estDrill && exercice.type === "reecriture" && PageSession.etatDrill[notion.id]?.demandeReecriture;
+    let piedHtml;
+    if (estConfirmation) {
+      piedHtml = resultat.correct === true
+        ? `<button type="button" class="bouton bouton-primaire bouton-large mt-md" data-drill="maitrise">${icono("coche_cercle","icone-sm")} Notion maîtrisée — continuer</button>`
+        : `<button type="button" class="bouton bouton-secondaire bouton-large mt-md" data-drill="recommencer">${icono("cerveau","icone-sm")} Pas encore tout à fait — je continue à m'entraîner</button>`;
+    } else if (estDrill) {
+      piedHtml = `<div class="flex gap-sm mt-md">
+        <button type="button" class="bouton bouton-secondaire flex-1" data-drill="continuer">${icono("cerveau","icone-sm")} Je continue à m'entraîner</button>
+        <button type="button" class="bouton bouton-primaire flex-1" data-drill="connais">${icono("coche","icone-sm")} Je connais cette définition</button>
+      </div>`;
+    } else {
+      piedHtml = `<div class="selecteur-confiance" data-confiance>
         <button type="button" class="option-confiance" data-c="aucune">Je ne savais pas</button>
         <button type="button" class="option-confiance" data-c="hesitation">J'hésitais</button>
         <button type="button" class="option-confiance" data-c="savais">Je savais</button>
         <button type="button" class="option-confiance" data-c="facile">Très facile</button>
-      </div>
+      </div>`;
+    }
+
+    zone.innerHTML = `<div class="panneau-correction ${classe}">
+      <div class="entete-correction ${classe}">${icono(classe==="correct"?"coche_cercle":classe==="partiel"?"info":"croix_cercle")}${titreCorrection}</div>
+      ${comparaison}
+      ${piedHtml}
     </div>`;
     zone.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    zone.querySelectorAll("[data-c]").forEach(b => b.addEventListener("click", () => PageSession.validerConfiance(notion, exercice, resultat, b.dataset.c)));
+    if (estDrill) zone.querySelectorAll("[data-drill]").forEach(b => b.addEventListener("click", () => PageSession.resoudreDrill(notion, exercice, resultat, b.dataset.drill)));
+    else zone.querySelectorAll("[data-c]").forEach(b => b.addEventListener("click", () => PageSession.validerConfiance(notion, exercice, resultat, b.dataset.c)));
   },
 
-  async validerConfiance(notion, exercice, resultat, confiance){
+  async enregistrerResultat(notion, exercice, resultat, confiance){
     const nouvelleProgression = Revision.calculerRevisionSuivante(notion, {
       correct: resultat.correct, typeExercice: exercice.type, indiceUtilise: PageSession.indiceNiveau,
       confiance, elementsManques: resultat.elementsManques || [], elementsCorrects: resultat.elementsCorrects || [],
@@ -3077,16 +3159,60 @@ const PageSession = {
     });
     if (resultat.correct === true) PageSession.stats.reussites++;
     else if (resultat.correct === "partiel") PageSession.stats.partiels++;
-    else { PageSession.stats.echecs++; PageSession.stats.aRetravailler.push(notion.id); }
+    else PageSession.stats.echecs++;
+  },
+
+  async validerConfiance(notion, exercice, resultat, confiance){
+    await PageSession.enregistrerResultat(notion, exercice, resultat, confiance);
+    if (resultat.correct !== true) PageSession.stats.aRetravailler.push(notion.id);
     PageSession.index++;
+    PageSession.rendre();
+  },
+
+  // action : "connais" (demande la réécriture de confirmation) · "continuer" (un autre
+  // exercice, même notion, plus tard dans la rotation) · "maitrise" (réécriture réussie :
+  // la notion sort du dossier en cours) · "recommencer" (réécriture ratée : retour à
+  // l'entraînement normal, on redonne sa chance plus tard).
+  async resoudreDrill(notion, exercice, resultat, action){
+    const confiance = resultat.correct === true ? (action === "connais" ? "facile" : "savais") : resultat.correct === "partiel" ? "hesitation" : "aucune";
+    await PageSession.enregistrerResultat(notion, exercice, resultat, confiance);
+    const etat = PageSession.etatDrill[notion.id];
+
+    if (action === "maitrise") {
+      PageSession.stats.notionsMaitrisees = (PageSession.stats.notionsMaitrisees || 0) + 1;
+      (PageSession.stats.notionsMaitriseesIds ||= []).push(notion.id);
+      PageSession.file.splice(PageSession.index, 1);
+      delete PageSession.etatDrill[notion.id];
+      Toast.succes(`« ${notion.titre} » maîtrisée !`);
+    } else if (action === "recommencer") {
+      etat.demandeReecriture = false;
+      PageSession.stats.aRetravailler.push(notion.id);
+      PageSession.index = PageSession.file.length ? (PageSession.index + 1) % PageSession.file.length : 0;
+    } else if (action === "connais") {
+      etat.demandeReecriture = true; // reteste la même notion tout de suite, avec une réécriture cette fois
+    } else {
+      if (resultat.correct !== true) PageSession.stats.aRetravailler.push(notion.id);
+      PageSession.index = PageSession.file.length ? (PageSession.index + 1) % PageSession.file.length : 0;
+    }
     PageSession.rendre();
   },
 
   async terminer(){
     const duree = Math.round((Date.now() - PageSession.stats.debut) / 1000);
-    await Store.ajouter("sessions", { type: PageSession.mode, notionsRevues: PageSession.file.length, reussites: PageSession.stats.reussites, echecs: PageSession.stats.echecs, dureeSecondes: duree });
+    const estDrill = PageSession.estDrill();
+    const notionsRevues = estDrill ? PageSession.totalDrill : PageSession.file.length;
+    await Store.ajouter("sessions", { type: PageSession.mode, notionsRevues, reussites: PageSession.stats.reussites, echecs: PageSession.stats.echecs, dureeSecondes: duree });
     await Gamification.surSessionTerminee();
-    Etat.ui.dernierResume = { ...PageSession.stats, duree, notionsRevues: PageSession.file.length, coursId: PageSession.coursId };
+    if (PageSession.mode === "interrogation" && PageSession.dossierValidationCible) {
+      const { type, id } = PageSession.dossierValidationCible;
+      await Store.modifier(type, id, { interrogationValideeLe: new Date().toISOString() });
+    }
+    const maitrisees = new Set(PageSession.stats.notionsMaitriseesIds || []);
+    Etat.ui.dernierResume = {
+      ...PageSession.stats, aRetravailler: [...new Set(PageSession.stats.aRetravailler)].filter(id => !maitrisees.has(id)),
+      duree, notionsRevues, coursId: PageSession.coursId,
+      estDrill, dossierValide: PageSession.mode === "interrogation",
+    };
     Routeur.aller("session/resume");
   },
 };
@@ -3098,12 +3224,18 @@ const PageResume = {
     const principal = document.getElementById("contenu-principal");
     if (!r) { Routeur.aller("dashboard"); return; }
     principal.innerHTML = `<div class="resume-session">
-      ${icono("coche_cercle","icone-lg")}<h1 class="mt-md">Session terminée !</h1>
-      <p class="texte-2 mt-sm">${r.notionsRevues} notion${r.notionsRevues>1?"s":""} révisée${r.notionsRevues>1?"s":""}</p>
+      ${icono("coche_cercle","icone-lg")}<h1 class="mt-md">${r.dossierValide ? "Dossier validé !" : "Session terminée !"}</h1>
+      <p class="texte-2 mt-sm">${r.dossierValide ? `Les ${r.notionsMaitrisees} définitions de ce dossier sont maîtrisées sur le bout des doigts.` : `${r.notionsRevues} notion${r.notionsRevues>1?"s":""} révisée${r.notionsRevues>1?"s":""}`}</p>
       <div class="grille-resume">
+        ${r.estDrill ? `
+        <div><div class="nombre texte-gras" style="color:var(--succes);font-size:1.6rem">${r.notionsMaitrisees||0}</div><div class="texte-petit texte-2">Maîtrisées</div></div>
+        <div><div class="nombre texte-gras" style="font-size:1.6rem">${r.reussites+r.partiels+r.echecs}</div><div class="texte-petit texte-2">Exercices faits</div></div>
+        <div><div class="nombre texte-gras" style="color:var(--danger);font-size:1.6rem">${r.aRetravailler.length}</div><div class="texte-petit texte-2">Encore floues</div></div>
+        ` : `
         <div><div class="nombre texte-gras" style="color:var(--succes);font-size:1.6rem">${r.reussites}</div><div class="texte-petit texte-2">Réussites</div></div>
         <div><div class="nombre texte-gras" style="color:var(--attention);font-size:1.6rem">${r.partiels||0}</div><div class="texte-petit texte-2">Partielles</div></div>
         <div><div class="nombre texte-gras" style="color:var(--danger);font-size:1.6rem">${r.echecs}</div><div class="texte-petit texte-2">À revoir</div></div>
+        `}
       </div>
       <p class="texte-2 texte-petit">Temps : ${Utils.formaterDuree(r.duree)}</p>
       ${r.aRetravailler.length ? `<div class="carte mt-lg" style="text-align:left"><h3 class="mb-sm">À retravailler</h3>${r.aRetravailler.map(id => { const n = Selecteurs.notion(id); return n ? `<div class="texte-petit" style="padding:.3rem 0">${Utils.echapperHtml(n.titre)}</div>` : ""; }).join("")}</div>` : ""}
@@ -3478,7 +3610,8 @@ const Gamification = {
     else streak = 1;
     const gainXp = PageSession.stats.reussites * 10 + PageSession.stats.partiels * 5;
     await Store.sauvegarderProfil({ streak, dernierJourActif: aujourdhui, xp: (Etat.profil.xp || 0) + gainXp });
-    await Store.ajouter("notifications", { destinataireId: Etat.uid, type: "SESSION_TERMINEE", titre: "Session terminée", description: `${PageSession.file.length} notion${PageSession.file.length>1?"s":""} révisée${PageSession.file.length>1?"s":""}.`, lu: false });
+    const nb = PageSession.estDrill() ? PageSession.totalDrill : PageSession.file.length;
+    await Store.ajouter("notifications", { destinataireId: Etat.uid, type: "SESSION_TERMINEE", titre: "Session terminée", description: `${nb} notion${nb>1?"s":""} révisée${nb>1?"s":""}.`, lu: false });
   },
 };
 
