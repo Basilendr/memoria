@@ -1,0 +1,22 @@
+rules_version = '2';
+
+// Isolation stricte par utilisateur : personne d'autre que le propriétaire d'un
+// compte ne peut lire ou écrire quoi que ce soit sous users/{uid}/... — aucune
+// donnée n'est partagée entre comptes dans Memoria (contrairement à un modèle
+// "famille" à code partagé), donc une seule règle suffit pour tout le modèle.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function estProprietaire(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+
+    match /users/{uid} {
+      allow read, write: if estProprietaire(uid);
+
+      match /{collection}/{docId} {
+        allow read, write: if estProprietaire(uid);
+      }
+    }
+  }
+}

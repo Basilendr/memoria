@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "memoria",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["/private/tmp/claude-501/-Users-basileandre-Documents-vieenfamille/a5e12ffa-5424-4875-96b0-cec2149c83f8/scratchpad/serveur.py"],
+      "port": 8766
+    }
+  ]
+}
