@@ -448,7 +448,7 @@ select.champ{ appearance:none; background-image:url("data:image/svg+xml,%3Csvg x
 .stat-rapide{ text-align:center; }
 .stat-rapide .nombre{ font-size:1.6rem; font-weight:800; display:block; }
 .grille-raccourcis{ display:grid; grid-template-columns:repeat(2,1fr); gap:var(--espace-md); margin-bottom:var(--espace-xl); }
-@media (min-width:640px){ .grille-raccourcis{ grid-template-columns:repeat(4,1fr); } }
+@media (min-width:640px){ .grille-raccourcis{ grid-template-columns:repeat(auto-fit, minmax(140px,1fr)); } }
 .raccourci{ display:flex; flex-direction:column; align-items:center; gap:.5rem; padding:var(--espace-md); text-align:center; }
 .raccourci .icone{ color:var(--primaire); }
 
@@ -458,6 +458,12 @@ select.champ{ appearance:none; background-image:url("data:image/svg+xml,%3Csvg x
 .carte-cours{ display:flex; flex-direction:column; gap:.6rem; }
 .entete-carte-cours{ display:flex; align-items:flex-start; justify-content:space-between; gap:.5rem; }
 .meta-cours{ display:flex; flex-wrap:wrap; gap:.4rem; align-items:center; }
+
+/* -- Cartes rapides -- */
+.liste-fiches-rapides{ display:flex; flex-direction:column; gap:var(--espace-md); }
+.fiche-rapide{ position:relative; border:1px solid var(--bordure); border-radius:var(--rayon); padding:var(--espace-md); background:var(--carte); }
+.fiche-rapide .numero-fiche{ position:absolute; top:var(--espace-md); right:var(--espace-md); color:var(--texte-3); font-weight:700; font-size:.75rem; }
+.fiche-rapide .bouton-icone{ position:absolute; top:.5rem; right:.5rem; }
 
 /* -- Page cours -- */
 .entete-page-cours{ margin-bottom:var(--espace-lg); }
@@ -2025,7 +2031,7 @@ const NAV_ITEMS = [
   { cle: "stats", libelle: "Progression", icone: "graphique", route: "stats" },
   { cle: "profil", libelle: "Profil", icone: "utilisateur", route: "profil" },
 ];
-const TITRES_PAGES = { dashboard: "Tableau de bord", cours: "Mes cours", reviser: "Réviser", calendrier: "Calendrier", stats: "Progression", profil: "Profil", notion: "Notion", session: "Session", examen: "Mode examen" };
+const TITRES_PAGES = { dashboard: "Tableau de bord", cours: "Mes cours", cartes: "Cartes rapides", reviser: "Réviser", calendrier: "Calendrier", stats: "Progression", profil: "Profil", notion: "Notion", session: "Session", examen: "Mode examen" };
 
 const Routeur = {
   routes: [],
@@ -2200,6 +2206,7 @@ const PageDashboard = {
       </div>
 
       <div class="grille-raccourcis">
+        <a href="#/cartes/nouveau" class="carte carte-cliquable raccourci">${icono("zap","icone-lg")}<span class="texte-petit texte-semi">Cartes rapides</span></a>
         <a href="#/cours/nouveau" class="carte carte-cliquable raccourci">${icono("plus","icone-lg")}<span class="texte-petit texte-semi">Ajouter un cours</span></a>
         <a href="#/cours" class="carte carte-cliquable raccourci">${icono("livre","icone-lg")}<span class="texte-petit texte-semi">Mes cours</span></a>
         <a href="#/reviser" class="carte carte-cliquable raccourci">${icono("cerveau","icone-lg")}<span class="texte-petit texte-semi">Réviser</span></a>
@@ -2272,7 +2279,10 @@ function ouvrirGestionMatieres(){
   `;
   Modale.ouvrir(html);
   const modaleEl = Modale.pile[Modale.pile.length - 1].el;
-  const rafraichir = () => { modaleEl.querySelector("[data-liste-matieres]").innerHTML = rendreListe(); attacherActions(); PageCours.rendre(Etat.ui.parametresPage); };
+  // Re-rend la page COURANTE (pas forcément "Mes cours" : ce gestionnaire de matières
+  // s'ouvre aussi depuis "Nouveau cours" et "Cartes rapides" quand aucune matière
+  // n'existe encore) — Routeur.gerer() rejoue simplement le handler de la route active.
+  const rafraichir = () => { modaleEl.querySelector("[data-liste-matieres]").innerHTML = rendreListe(); attacherActions(); Routeur.gerer(); };
   function attacherActions(){
     modaleEl.querySelectorAll("[data-fermer]").forEach(b => b.addEventListener("click", () => Modale.fermer()));
     modaleEl.querySelector("[data-nouvelle-matiere]").onclick = () => {
@@ -2319,6 +2329,7 @@ const PageCours = {
         <div class="recherche-entete">${icono("recherche","icone-sm")}<input type="search" placeholder="Rechercher un cours..." value="${Utils.echapperHtml(PageCours.filtres.recherche)}" data-recherche-cours></div>
         <div class="flex gap-sm">
           <button class="bouton bouton-contour" data-gerer-matieres>${icono("engrenage","icone-sm")} Matières</button>
+          <button class="bouton bouton-secondaire" data-action="aller" data-route="cartes/nouveau">${icono("zap","icone-sm")} Cartes rapides</button>
           <button class="bouton bouton-primaire" data-action="aller" data-route="cours/nouveau">${icono("plus","icone-sm")} Nouveau cours</button>
         </div>
       </div>
@@ -2409,6 +2420,95 @@ const PageCoursForm = {
       Toast.succes("Cours enregistré.");
       Routeur.aller(`cours/${enregistrement.id}`);
     });
+  },
+};
+
+/* ==================== G2b. CARTES RAPIDES ==================== */
+// Apprendre sans passer par un cours entier : l'utilisateur tape directement des paires
+// terme/définition, qui deviennent des notions "gardee" immédiatement (pas d'étape
+// d'analyse ni de validation — il n'y a rien à détecter, tout est déjà structuré).
+const PageCartesRapides = {
+  fiches: [{ terme: "", definition: "" }],
+
+  rendre(){
+    const principal = document.getElementById("contenu-principal");
+    if (!Etat.donnees.matieres.length) {
+      principal.innerHTML = carteVide("livre", "Crée d'abord une matière", "Une carte doit appartenir à une matière.", `<button class="bouton bouton-primaire mt-sm" data-gerer-matieres>${icono("plus","icone-sm")} Créer une matière</button>`);
+      principal.querySelector("[data-gerer-matieres]").addEventListener("click", ouvrirGestionMatieres);
+      return;
+    }
+    PageCartesRapides.fiches = [{ terme: "", definition: "" }];
+    PageCartesRapides.afficher();
+  },
+
+  afficher(){
+    const principal = document.getElementById("contenu-principal");
+    principal.innerHTML = `
+      <div style="max-width:640px;margin:0 auto">
+        <a href="#/cours" class="texte-2 texte-petit flex items-centre gap-xs mb-md">${icono("fleche_gauche","icone-xs")} Retour</a>
+        <h1 class="mb-sm">Cartes rapides</h1>
+        <p class="texte-2 mb-lg">Pas besoin d'un cours entier : donne directement des termes et leurs définitions, Memoria en fait des révisions tout de suite.</p>
+        <div class="rangee-champs">
+          <div class="groupe-champ"><label>Matière</label><select class="champ" id="cr-matiere">${Etat.donnees.matieres.map(m => `<option value="${m.id}">${Utils.echapperHtml(m.nom)}</option>`).join("")}</select></div>
+          <div class="groupe-champ"><label>Titre (facultatif)</label><input class="champ" type="text" id="cr-titre" placeholder="Ex. Vocabulaire d'anglais"></div>
+        </div>
+        <div class="liste-fiches-rapides" id="crListe"></div>
+        <button class="bouton bouton-secondaire bouton-large mt-md" id="cr-ajouter">${icono("plus","icone-sm")} Ajouter une autre carte</button>
+        <div class="flex gap-sm mt-lg">
+          <button class="bouton bouton-fantome" data-action="aller" data-route="cours">Annuler</button>
+          <button class="bouton bouton-secondaire flex-1" id="cr-enregistrer">Enregistrer pour plus tard</button>
+          <button class="bouton bouton-primaire flex-1" id="cr-apprendre">${icono("cerveau","icone-sm")} Créer et apprendre</button>
+        </div>
+      </div>`;
+    PageCartesRapides.rendreListe();
+    document.getElementById("cr-ajouter").addEventListener("click", () => {
+      PageCartesRapides.fiches.push({ terme: "", definition: "" });
+      PageCartesRapides.rendreListe();
+    });
+    document.getElementById("cr-enregistrer").addEventListener("click", () => PageCartesRapides.enregistrer(false));
+    document.getElementById("cr-apprendre").addEventListener("click", () => PageCartesRapides.enregistrer(true));
+  },
+
+  rendreListe(){
+    const zone = document.getElementById("crListe");
+    zone.innerHTML = PageCartesRapides.fiches.map((f, i) => `
+      <div class="fiche-rapide" data-fiche="${i}">
+        ${PageCartesRapides.fiches.length > 1 ? `<button type="button" class="bouton-icone" data-retirer="${i}" aria-label="Retirer cette carte">${icono("croix","icone-sm")}</button>` : ""}
+        <div class="groupe-champ"><label>Terme ${i+1}</label><input class="champ" type="text" data-terme="${i}" value="${Utils.echapperHtml(f.terme)}" placeholder="Ex. Photosynthèse"></div>
+        <div class="groupe-champ" style="margin-bottom:0"><label>Définition</label><textarea class="champ" data-definition="${i}" style="min-height:80px" placeholder="Ex. Processus par lequel les plantes utilisent la lumière...">${Utils.echapperHtml(f.definition)}</textarea></div>
+      </div>`).join("");
+    zone.querySelectorAll("[data-terme]").forEach(el => el.addEventListener("input", () => { PageCartesRapides.fiches[el.dataset.terme].terme = el.value; }));
+    zone.querySelectorAll("[data-definition]").forEach(el => el.addEventListener("input", () => { PageCartesRapides.fiches[el.dataset.definition].definition = el.value; }));
+    zone.querySelectorAll("[data-retirer]").forEach(el => el.addEventListener("click", () => {
+      PageCartesRapides.fiches.splice(Number(el.dataset.retirer), 1);
+      PageCartesRapides.rendreListe();
+    }));
+  },
+
+  async enregistrer(demarrerSession){
+    const matiereId = document.getElementById("cr-matiere").value;
+    const titreSaisi = document.getElementById("cr-titre").value.trim();
+    const valides = PageCartesRapides.fiches.filter(f => f.terme.trim() && f.definition.trim());
+    if (!valides.length) return Toast.erreur("Ajoute au moins un terme et sa définition.");
+    const titre = titreSaisi || `Cartes rapides — ${Utils.formaterDateCourte(new Date())}`;
+    const contenu = valides.map(f => `${f.terme} : ${f.definition}`).join("\n\n");
+    const cours = await Store.ajouter("cours", { titre, matiereId, contenu, favori: false, archive: false });
+    const chapitre = await Store.ajouter("chapitres", { coursId: cours.id, titre, ordre: 0 });
+    const notionsCreees = [];
+    for (const f of valides) {
+      const terme = f.terme.trim(), definition = f.definition.trim();
+      const doc = await Store.ajouter("notions", {
+        titre: terme, type: "vocabulaire",
+        question: `Que signifie « ${terme} » ?`, reponse: definition,
+        elements: Analyseur.extraireElements(definition), importance: 2, difficulte: 1,
+        coursId: cours.id, matiereId, chapitreId: chapitre.id,
+        statutValidation: "gardee", progression: Revision.progressionInitiale(),
+      });
+      notionsCreees.push(doc);
+    }
+    Toast.succes(`${notionsCreees.length} carte${notionsCreees.length>1?"s":""} créée${notionsCreees.length>1?"s":""}.`);
+    if (demarrerSession) PageSession.demarrer("apprendre", { notions: notionsCreees, coursId: cours.id });
+    else Routeur.aller(`cours/${cours.id}`);
   },
 };
 
@@ -3607,6 +3707,7 @@ document.addEventListener("keydown", (e) => {
 
 function enregistrerRoutes(){
   Routeur.definir("dashboard", PageDashboard.rendre);
+  Routeur.definir("cartes/nouveau", PageCartesRapides.rendre);
   Routeur.definir("cours/nouveau", PageCoursForm.rendre);
   Routeur.definir("cours/:id/editer", PageCoursForm.rendre);
   Routeur.definir("cours/:id/valider", PageValidation.rendre);
