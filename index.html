@@ -1099,6 +1099,7 @@ function ouvrirFormulaire({ titre, champs, valeurs = {}, texteValider = "Enregis
       await onValider(resultat);
       Modale.fermer();
     } catch (err) {
+      console.error("Échec de la validation du formulaire :", err?.code, err?.message, err);
       Toast.erreur(err?.message || "Une erreur est survenue.");
       boutonValider.disabled = false;
     }
@@ -1904,7 +1905,7 @@ const Auth = {
         bouton.disabled = true;
         const donnees = Object.fromEntries(new FormData(form));
         try { await action(donnees); }
-        catch (err) { Toast.erreur(err.message || "Une erreur est survenue."); bouton.disabled = false; }
+        catch (err) { console.error("Échec du formulaire d'authentification :", err.code, err.message, err); Toast.erreur(err.message || "Une erreur est survenue."); bouton.disabled = false; }
       });
     };
     gerer(conteneur.querySelector("[data-form-connexion]"), async (d) => {
@@ -1929,7 +1930,20 @@ const Auth = {
       try {
         const cred = await signInWithPopup(auth, new GoogleAuthProvider());
         await Auth.surConnexion(cred.user.uid, { email: cred.user.email, prenom: cred.user.displayName?.split(" ")[0], photoURL: cred.user.photoURL });
-      } catch (err) { Toast.erreur("Connexion Google impossible."); }
+      } catch (err) {
+        // Toujours logger l'erreur réelle : un message générique seul rend le
+        // diagnostic impossible depuis la console du navigateur.
+        console.error("Échec de la connexion Google :", err.code, err.message, err);
+        const messages = {
+          "auth/unauthorized-domain": "Ce domaine n'est pas autorisé dans Firebase (Authentication → Settings → Authorized domains).",
+          "auth/operation-not-allowed": "La connexion Google n'est pas activée dans Firebase (Authentication → Sign-in method).",
+          "auth/popup-blocked": "Le navigateur a bloqué la fenêtre de connexion — autorise les popups pour ce site.",
+          "auth/popup-closed-by-user": "Fenêtre de connexion fermée avant la fin.",
+          "auth/cancelled-popup-request": "Connexion annulée.",
+          "auth/account-exists-with-different-credential": "Un compte existe déjà avec cet e-mail via une autre méthode de connexion.",
+        };
+        Toast.erreur(messages[err.code] || `Connexion Google impossible (${err.code || err.message}).`);
+      }
     });
     conteneur.querySelector("[data-invite]")?.addEventListener("click", async () => {
       const u = await DemoAuth.invite();
