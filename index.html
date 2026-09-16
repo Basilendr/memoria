@@ -1035,6 +1035,9 @@ function rendreChamp(champ, valeurs){
     case "date":
       entree = `<input class="champ" type="date" name="${champ.cle}" value="${val ?? ""}" ${requis}>`;
       break;
+    case "motdepasse":
+      entree = `<input class="champ" type="password" name="${champ.cle}" autocomplete="${champ.autocomplete||"new-password"}" ${requis}>`;
+      break;
     case "coche":
       return `<label class="case-a-cocher"><input type="checkbox" name="${champ.cle}" ${val ? "checked" : ""}><span>${Utils.echapperHtml(champ.label)}</span></label>${aide}`;
     case "couleur":
@@ -1122,7 +1125,12 @@ const Etat = {
 
 const Store = {
   _donneesVides(){ return Object.fromEntries(COLLECTIONS.map(c => [c, []])); },
-  _cleDemo(){ return "memoria-demo-donnees"; },
+  // Scopée par compte : sans ça, deux comptes démo créés sur le même navigateur
+  // partageaient purement et simplement les mêmes données (l'un pouvait écraser
+  // les cours de l'autre), ce qui viole l'isolation par utilisateur promise partout
+  // ailleurs dans l'app. "demo-invite" (compte invité) reste une clé fixe à part :
+  // c'est un accès volontairement partagé, sans identifiant propre.
+  _cleDemo(){ return `memoria-demo-donnees-${Etat.uid || "invite"}`; },
   _sauverDemo(){
     localStorage.setItem(Store._cleDemo(), JSON.stringify({ profil: Etat.profil, donnees: Etat.donnees }));
   },
@@ -1198,6 +1206,16 @@ const Store = {
     for (const ch of chapitres) await Store.supprimer("chapitres", ch.id);
     if (Etat.demo) Store._sauverDemo();
     await Store.supprimer("cours", coursId);
+  },
+
+  // Supprimer le compte (Auth) ne supprime pas les données Firestore associées —
+  // sans ce nettoyage explicite, "supprimer mon compte" laissait tout en base
+  // indéfiniment, malgré le message affiché à l'utilisateur.
+  async supprimerToutesLesDonnees(){
+    for (const c of COLLECTIONS) {
+      for (const item of Etat.donnees[c]) await deleteDoc(doc(db, "users", Etat.uid, c, item.id));
+    }
+    await deleteDoc(doc(db, "users", Etat.uid));
   },
 };
 
@@ -3719,8 +3737,8 @@ const PageParametres = {
     principal.querySelector("#pa-deconnexion").addEventListener("click", () => Auth.deconnecter());
     principal.querySelector("#pa-mdp").addEventListener("click", () => {
       const champs = Etat.demo
-        ? [{ cle: "ancien", label: "Mot de passe actuel", type: "texte" }, { cle: "nouveau", label: "Nouveau mot de passe", type: "texte", aide: "10 caractères, une majuscule, une minuscule, un chiffre." }]
-        : [{ cle: "nouveau", label: "Nouveau mot de passe", type: "texte", aide: "10 caractères, une majuscule, une minuscule, un chiffre." }];
+        ? [{ cle: "ancien", label: "Mot de passe actuel", type: "motdepasse", autocomplete: "current-password" }, { cle: "nouveau", label: "Nouveau mot de passe", type: "motdepasse", aide: "10 caractères, une majuscule, une minuscule, un chiffre." }]
+        : [{ cle: "nouveau", label: "Nouveau mot de passe", type: "motdepasse", aide: "10 caractères, une majuscule, une minuscule, un chiffre." }];
       ouvrirFormulaire({
         titre: "Modifier le mot de passe", champs,
         onValider: async (v) => {
@@ -3743,7 +3761,7 @@ const PageParametres = {
       if (!ok) return;
       try {
         if (Etat.demo) { const comptes = DemoAuth.comptes(); delete comptes[p.email]; DemoAuth.sauverComptes(comptes); localStorage.removeItem(Store._cleDemo()); DemoAuth.deconnecter(); }
-        else { await deleteUser(auth.currentUser); }
+        else { await Store.supprimerToutesLesDonnees(); await deleteUser(auth.currentUser); }
         Toast.succes("Compte supprimé.");
         location.reload();
       } catch (err) { Toast.erreur("Reconnecte-toi puis réessaie (action sensible)."); }
