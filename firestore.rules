@@ -1,9 +1,17 @@
 rules_version = '2';
 
-// Isolation stricte par utilisateur : personne d'autre que le propriétaire d'un
-// compte ne peut lire ou écrire quoi que ce soit sous users/{uid}/... — aucune
-// donnée n'est partagée entre comptes dans Memoria (contrairement à un modèle
-// "famille" à code partagé), donc une seule règle suffit pour tout le modèle.
+// Deux couches de protection, pas une seule :
+//  1) Isolation stricte par utilisateur — personne d'autre que le propriétaire d'un
+//     compte ne peut lire ou écrire quoi que ce soit sous users/{uid}/...
+//  2) Validation du CONTENU écrit — type de chaque champ connu, tailles plafonnées,
+//     cohérence entre l'id du document et son champ "id", et uniquement les
+//     collections que l'application utilise réellement (toute autre collection est
+//     refusée par défaut, Firestore étant "deny by default" en l'absence de règle).
+//
+// Les mises à jour Firestore sont des fusions PARTIELLES (updateDoc) : chaque
+// validateur ne contraint donc QUE les champs présents dans l'écriture — jamais un
+// ensemble figé, sinon la moindre mise à jour partielle (ex. cocher "favori") serait
+// rejetée à tort.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -11,11 +19,131 @@ service cloud.firestore {
       return request.auth != null && request.auth.uid == uid;
     }
 
-    match /users/{uid} {
-      allow read, write: if estProprietaire(uid);
+    // -- Validateurs de champ, réutilisables par tous les validateurs de document --
+    function texteFacultatif(d, cle, max) {
+      return !(cle in d) || (d[cle] is string && d[cle].size() <= max);
+    }
+    // Pour les champs qui peuvent valoir explicitement null (ex. "pas de matière").
+    function texteOuNulFacultatif(d, cle, max) {
+      return !(cle in d) || d[cle] == null || (d[cle] is string && d[cle].size() <= max);
+    }
+    function nombreFacultatif(d, cle) {
+      return !(cle in d) || d[cle] is number;
+    }
+    function boolFacultatif(d, cle) {
+      return !(cle in d) || d[cle] is bool;
+    }
+    function listeFacultative(d, cle) {
+      return !(cle in d) || d[cle] is list;
+    }
+    function carteFacultative(d, cle) {
+      return !(cle in d) || d[cle] is map;
+    }
+    // Si le document envoie son propre champ "id" (toujours le cas à la création,
+    // jamais lors d'une mise à jour partielle), il doit correspondre à l'identifiant
+    // réel du document — empêche une incohérence chemin ↔ contenu.
+    function idCoherent(docId, d) {
+      return !('id' in d) || d.id == docId;
+    }
 
-      match /{collection}/{docId} {
-        allow read, write: if estProprietaire(uid);
+    function profilValide(d) {
+      return texteFacultatif(d, 'prenom', 100) && texteFacultatif(d, 'nom', 100)
+        && texteFacultatif(d, 'email', 200) && texteOuNulFacultatif(d, 'photoURL', 300000)
+        && nombreFacultatif(d, 'streak') && nombreFacultatif(d, 'xp')
+        && boolFacultatif(d, 'rappelsActifs') && texteFacultatif(d, 'heureRappel', 10)
+        && boolFacultatif(d, 'onboardingFait') && texteFacultatif(d, 'styleApprentissage', 50)
+        && texteFacultatif(d, 'dateCreation', 50) && texteFacultatif(d, 'dernierJourActif', 50)
+        && texteFacultatif(d, 'dernierRappelEnvoye', 50);
+    }
+    function matiereValide(d) {
+      return texteFacultatif(d, 'nom', 100) && texteFacultatif(d, 'couleur', 100) && texteFacultatif(d, 'icone', 50);
+    }
+    function coursValide(d) {
+      return texteFacultatif(d, 'titre', 300) && texteFacultatif(d, 'matiereId', 200)
+        && texteFacultatif(d, 'contenu', 300000) && boolFacultatif(d, 'favori') && boolFacultatif(d, 'archive')
+        && texteFacultatif(d, 'interrogationValideeLe', 50);
+    }
+    function chapitreValide(d) {
+      return texteFacultatif(d, 'coursId', 200) && texteFacultatif(d, 'titre', 300)
+        && nombreFacultatif(d, 'ordre') && texteFacultatif(d, 'interrogationValideeLe', 50);
+    }
+    function notionValide(d) {
+      return texteFacultatif(d, 'titre', 300) && texteFacultatif(d, 'type', 50)
+        && texteFacultatif(d, 'question', 1000) && texteFacultatif(d, 'reponse', 10000)
+        && listeFacultative(d, 'elements') && texteFacultatif(d, 'coursId', 200)
+        && texteFacultatif(d, 'matiereId', 200) && texteFacultatif(d, 'chapitreId', 200)
+        && nombreFacultatif(d, 'importance') && nombreFacultatif(d, 'difficulte')
+        && texteFacultatif(d, 'statutValidation', 50) && carteFacultative(d, 'progression');
+    }
+    function historiqueValide(d) {
+      return texteFacultatif(d, 'notionId', 200) && texteFacultatif(d, 'date', 50)
+        && texteFacultatif(d, 'typeExercice', 50) && listeFacultative(d, 'elementsManques')
+        && nombreFacultatif(d, 'indiceUtilise') && texteFacultatif(d, 'confiance', 50);
+    }
+    function sessionValide(d) {
+      return texteFacultatif(d, 'type', 50) && nombreFacultatif(d, 'notionsRevues')
+        && nombreFacultatif(d, 'reussites') && nombreFacultatif(d, 'echecs') && nombreFacultatif(d, 'dureeSecondes');
+    }
+    function examenValide(d) {
+      return nombreFacultatif(d, 'score') && nombreFacultatif(d, 'total') && texteOuNulFacultatif(d, 'matiereId', 200);
+    }
+    function controleValide(d) {
+      return texteFacultatif(d, 'nom', 200) && texteFacultatif(d, 'date', 50);
+    }
+    function notificationValide(d) {
+      return texteFacultatif(d, 'destinataireId', 200) && texteFacultatif(d, 'type', 50)
+        && texteFacultatif(d, 'titre', 200) && texteFacultatif(d, 'description', 1000) && boolFacultatif(d, 'lu');
+    }
+
+    match /users/{uid} {
+      allow read: if estProprietaire(uid);
+      allow create, update: if estProprietaire(uid) && profilValide(request.resource.data);
+      allow delete: if estProprietaire(uid);
+
+      match /matieres/{docId} {
+        allow read: if estProprietaire(uid);
+        allow create, update: if estProprietaire(uid) && idCoherent(docId, request.resource.data) && matiereValide(request.resource.data);
+        allow delete: if estProprietaire(uid);
+      }
+      match /cours/{docId} {
+        allow read: if estProprietaire(uid);
+        allow create, update: if estProprietaire(uid) && idCoherent(docId, request.resource.data) && coursValide(request.resource.data);
+        allow delete: if estProprietaire(uid);
+      }
+      match /chapitres/{docId} {
+        allow read: if estProprietaire(uid);
+        allow create, update: if estProprietaire(uid) && idCoherent(docId, request.resource.data) && chapitreValide(request.resource.data);
+        allow delete: if estProprietaire(uid);
+      }
+      match /notions/{docId} {
+        allow read: if estProprietaire(uid);
+        allow create, update: if estProprietaire(uid) && idCoherent(docId, request.resource.data) && notionValide(request.resource.data);
+        allow delete: if estProprietaire(uid);
+      }
+      match /historique/{docId} {
+        allow read: if estProprietaire(uid);
+        allow create, update: if estProprietaire(uid) && idCoherent(docId, request.resource.data) && historiqueValide(request.resource.data);
+        allow delete: if estProprietaire(uid);
+      }
+      match /sessions/{docId} {
+        allow read: if estProprietaire(uid);
+        allow create, update: if estProprietaire(uid) && idCoherent(docId, request.resource.data) && sessionValide(request.resource.data);
+        allow delete: if estProprietaire(uid);
+      }
+      match /examens/{docId} {
+        allow read: if estProprietaire(uid);
+        allow create, update: if estProprietaire(uid) && idCoherent(docId, request.resource.data) && examenValide(request.resource.data);
+        allow delete: if estProprietaire(uid);
+      }
+      match /controles/{docId} {
+        allow read: if estProprietaire(uid);
+        allow create, update: if estProprietaire(uid) && idCoherent(docId, request.resource.data) && controleValide(request.resource.data);
+        allow delete: if estProprietaire(uid);
+      }
+      match /notifications/{docId} {
+        allow read: if estProprietaire(uid);
+        allow create, update: if estProprietaire(uid) && idCoherent(docId, request.resource.data) && notificationValide(request.resource.data);
+        allow delete: if estProprietaire(uid);
       }
     }
   }
