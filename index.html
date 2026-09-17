@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Memoria — Apprends pour de vrai</title>
+<title>CartesFacile — Apprends pour de vrai</title>
 <meta name="description" content="Transforme tes cours en un programme de révision personnalisé : rappel actif, répétition espacée, et un moteur qui sait précisément ce que tu maîtrises.">
 <meta name="theme-color" content="#0D9488">
 <link rel="manifest" href="manifest.json">
@@ -612,6 +612,20 @@ select.champ{ appearance:none; background-image:url("data:image/svg+xml,%3Csvg x
 .interrupteur.actif{ background:var(--primaire); }
 .interrupteur.actif::after{ transform:translateX(18px); }
 
+/* -- Définitions / Évaluations -- */
+.carte-definition{ padding:var(--espace-md); }
+.carte-definition.selectionnee{ border-color:var(--primaire); background:var(--primaire-clair); }
+.barre-selection-flottante{
+  display:none; position:fixed; left:50%; transform:translateX(-50%);
+  bottom:calc(var(--barre-basse-h) + var(--espace-md)); z-index:80; max-width:calc(100% - 2rem); width:560px;
+  background:var(--carte); border:1px solid var(--bordure-forte); border-radius:var(--rayon-lg); box-shadow:var(--ombre-haute);
+  padding:.75rem var(--espace-md); align-items:center; justify-content:space-between; gap:var(--espace-md); flex-wrap:wrap;
+}
+.barre-selection-flottante.visible{ display:flex; }
+@media (min-width:960px){ .barre-selection-flottante{ bottom:var(--espace-lg); } }
+.carte-paquet-cartesfacile{ display:flex; flex-direction:column; gap:.6rem; }
+.case-selection-multiple{ width:20px; height:20px; accent-color:var(--primaire); cursor:pointer; flex-shrink:0; }
+
 /* ==================== 9. PRÉFÉRENCES SYSTÈME ==================== */
 @media (prefers-color-scheme: dark){
   :root:not([data-theme="clair"]):not([data-theme="sombre"]){
@@ -725,6 +739,7 @@ const TYPES_EXERCICE = {
   reecriture:     "Réécriture complète",
   association:    "Association",
   ordre:          "Remettre dans l'ordre",
+  identification: "Identification",
 };
 
 // Étapes de maîtrise d'une notion — la progression n'avance que dans ce sens,
@@ -1114,14 +1129,14 @@ function ouvrirFormulaire({ titre, champs, valeurs = {}, texteValider = "Enregis
 // une jointure côté client à chaque file de révision. Les exercices, eux, ne sont jamais
 // stockés : ils sont régénérés à la volée par le Moteur (section D) à partir des champs
 // de la notion — seuls la notion, son historique et ses sessions sont persistés.
-const COLLECTIONS = ["matieres", "cours", "chapitres", "notions", "historique", "sessions", "examens", "controles", "notifications"];
+const COLLECTIONS = ["matieres", "cours", "chapitres", "notions", "historique", "sessions", "examens", "evaluations", "controles", "notifications"];
 
 const Etat = {
   uid: null,
   demo: MODE_DEMO,
   profil: null,
   donnees: null,
-  ui: { pageActuelle: "dashboard", parametresPage: {}, menuPlusOuvert: false },
+  ui: { pageActuelle: "dashboard", parametresPage: {}, menuPlusOuvert: false, selectionEvaluation: null },
 };
 
 const Store = {
@@ -1209,6 +1224,30 @@ const Store = {
     await Store.supprimer("cours", coursId);
   },
 
+  // Duplication complète d'un paquet CartesFacile : contrairement à "dupliquer" un cours
+  // normal (qui ne recopie que le texte brut, à ré-analyser), un paquet de cartes n'a pas
+  // de texte source à ré-analyser — il faut recopier directement chapitres et notions,
+  // avec une progression neuve (une copie n'hérite pas de l'historique de l'original).
+  async dupliquerCoursAvecNotions(coursId){
+    const original = Selecteurs.cours(coursId);
+    if (!original) return null;
+    const copie = await Store.ajouter("cours", { titre: `${original.titre} (copie)`, matiereId: original.matiereId, contenu: original.contenu, favori: false, archive: false, origine: original.origine || null });
+    const correspondanceChapitres = {};
+    for (const ch of Selecteurs.chapitresDeCours(coursId)) {
+      const copieCh = await Store.ajouter("chapitres", { coursId: copie.id, titre: ch.titre, ordre: ch.ordre });
+      correspondanceChapitres[ch.id] = copieCh.id;
+    }
+    for (const n of Selecteurs.notionsDeCours(coursId)) {
+      await Store.ajouter("notions", {
+        titre: n.titre, type: n.type, question: n.question, reponse: n.reponse, elements: n.elements,
+        importance: n.importance, difficulte: n.difficulte, coursId: copie.id, matiereId: copie.matiereId,
+        chapitreId: correspondanceChapitres[n.chapitreId] || null,
+        statutValidation: "gardee", progression: Revision.progressionInitiale(),
+      });
+    }
+    return copie;
+  },
+
   // Supprimer le compte (Auth) ne supprime pas les données Firestore associées —
   // sans ce nettoyage explicite, "supprimer mon compte" laissait tout en base
   // indéfiniment, malgré le message affiché à l'utilisateur.
@@ -1259,6 +1298,12 @@ const Selecteurs = {
   toutesNotionsValidees(){ return Etat.donnees.notions.filter(n => n.statutValidation === "gardee"); },
   historiqueDeNotion(notionId){ return Etat.donnees.historique.filter(h => h.notionId === notionId).sort((a,b) => new Date(b.date) - new Date(a.date)); },
   notificationsNonLues(){ return Etat.donnees.notifications.filter(n => !n.lu); },
+  // "Paquets" CartesFacile = cours créés depuis Cartes rapides (cours.origine === "rapide"),
+  // par opposition aux cours normaux (texte collé + analyse) affichés dans Mes cours —
+  // même collection Firestore, juste un tag pour séparer les deux usages à l'affichage.
+  paquetsCartesFacile(){ return Etat.donnees.cours.filter(c => c.origine === "rapide" && !c.archive); },
+  notionsDePaquets(){ const ids = new Set(Selecteurs.paquetsCartesFacile().map(c => c.id)); return Selecteurs.toutesNotionsValidees().filter(n => ids.has(n.coursId)); },
+  evaluations(){ return [...Etat.donnees.evaluations].sort((a,b) => new Date(b.dateCreation) - new Date(a.dateCreation)); },
 };
 
 /* ==================== D. MOTEUR D'APPRENTISSAGE ==================== */
@@ -1558,10 +1603,13 @@ const Moteur = {
     return [indice1, indice2, indice3];
   },
 
-  genererExercice(notion, typeForce){
+  // `opts` sert exclusivement à la séquence pédagogique (G6b) : indiceLettres/nbTrousMax
+  // pour le texte à trous, forcerMots pour cibler précisément un élément oublié (§17/22).
+  genererExercice(notion, typeForce, opts = {}){
     let type = typeForce || Moteur.choisirTypeExercice(notion);
     if (type === "association" && Selecteurs.notionsValideesDeCours(notion.coursId).filter(n => n.id !== notion.id).length < 3) type = "qcm";
     if (type === "ordre" && (!notion.elements || notion.elements.length < 3)) type = "reponse_libre";
+    if (type === "identification" && (!notion.elements || notion.elements.length < 2)) type = "qcm";
 
     if (type === "qcm") {
       const distracteurs = Moteur.genererDistracteurs(notion, 3);
@@ -1574,8 +1622,10 @@ const Moteur = {
       return { type, notionId: notion.id, enonce: "Vrai ou faux ?", donnees: { affirmation, estVraie } };
     }
     if (type === "texte_trous") {
-      const nbTrous = Utils.clamp(Math.round((notion.elements?.length || 2) / 2), 1, 3);
-      const cibles = (notion.elements || []).slice(0, nbTrous);
+      const elementsDispo = notion.elements || [];
+      const cibles = opts.forcerMots?.length ? opts.forcerMots
+        : opts.nbTrousMax ? elementsDispo.slice(0, 6)
+        : elementsDispo.slice(0, Utils.clamp(Math.round((elementsDispo.length || 2) / 2), 1, 3));
       let texte = notion.reponse, reponses = [];
       // L'étiquette {{n}} doit être l'index RÉEL dans `reponses` (celui qu'on push), pas
       // la position dans `cibles` : si un mot ne matche pas, les deux dérivaient et
@@ -1590,7 +1640,17 @@ const Moteur = {
         if (motsCles[0] && motif.test(texte)) { texte = texte.replace(motif, "{{0}}"); reponses.push(motsCles[0]); }
       }
       const segments = texte.split(/\{\{(\d+)\}\}/);
-      return { type, notionId: notion.id, enonce: notion.question, donnees: { segments, reponses } };
+      // "Mets la première lettre, voire plusieurs si besoin" : un indice visuel progressif
+      // pour la séquence pédagogique en tout début d'apprentissage — jamais utilisé par le
+      // moteur "drill" classique (indiceLettres reste 0 par défaut, comportement inchangé).
+      return { type, notionId: notion.id, enonce: notion.question, donnees: { segments, reponses, indiceLettres: opts.indiceLettres || 0 } };
+    }
+    if (type === "identification") {
+      const bonnes = (notion.elements || []).slice(0, 6);
+      const autresNotions = Selecteurs.toutesNotionsValidees().filter(n => n.id !== notion.id && n.elements?.length);
+      const leurres = Utils.echantillon(Utils.melanger(autresNotions).flatMap(n => n.elements), Math.min(3, Math.max(2, Math.round(bonnes.length/2))));
+      const options = Utils.melanger([...bonnes, ...new Set(leurres)].filter((v,i,a) => a.indexOf(v)===i));
+      return { type, notionId: notion.id, enonce: `Quels éléments appartiennent à la définition de « ${notion.titre} » ?`, donnees: { options, bonnesReponses: bonnes } };
     }
     if (type === "association") {
       const autres = Utils.echantillon(Selecteurs.notionsValideesDeCours(notion.coursId).filter(n => n.id !== notion.id), 3);
@@ -1604,7 +1664,7 @@ const Moteur = {
     if (type === "reecriture") {
       return { type, notionId: notion.id, enonce: notion.titre, donnees: { consigne: "Écris la définition complète, de mémoire." } };
     }
-    return { type: "reponse_libre", notionId: notion.id, enonce: notion.question, donnees: { indices: Moteur.genererIndices(notion) } };
+    return { type: "reponse_libre", notionId: notion.id, enonce: opts.motsCles ? `Quels sont les mots-clés à retenir pour « ${notion.titre} » ?` : notion.question, donnees: { indices: Moteur.genererIndices(notion) } };
   },
 
   // Évalue une réponse libre / réécriture en comparant le SENS (mots-clés / éléments
@@ -1631,6 +1691,42 @@ const Moteur = {
     return { correct, ratio, elementsCorrects, elementsManques };
   },
 
+  // -- Correction sémantique de l'Évaluation (§9-12) --
+  // Toujours heuristique (mots-clés + fenêtre de négation), jamais une vraie compréhension
+  // du sens — le README (§ API IA) explique pourquoi ce projet n'appelle aucune API d'IA :
+  // ce même principe s'applique ici. C'est suffisant pour la promesse réelle du cahier des
+  // charges : "une formulation différente ne veut pas dire fausse" fonctionne déjà grâce à
+  // la comparaison par éléments essentiels (pas mot à mot) de evaluerReponseLibre ci-dessus ;
+  // ce qui manquait, c'est de distinguer un élément simplement OUBLIÉ d'un élément CONTREDIT
+  // (présent dans la réponse, mais nié) — d'où NEGATIONS et cette fonction dédiée.
+  NEGATIONS: new Set(["ne","n","pas","jamais","aucun","aucune","ni","non","sans","guere"]),
+  analyserRestitution(notion, reponseUtilisateur){
+    const motsRep = Utils.normaliserTexte(reponseUtilisateur).split(" ").filter(Boolean);
+    const elements = notion.elements?.length ? notion.elements : Analyseur.extraireElements(notion.reponse, 5);
+    const elementsCorrects = [], elementsManques = [], elementsContredits = [];
+    for (const el of elements) {
+      const elNorm = Utils.normaliserTexte(el);
+      const indexTrouve = motsRep.findIndex(motRep => motsProches(elNorm, motRep));
+      if (indexTrouve === -1) { elementsManques.push(el); continue; }
+      const fenetre = motsRep.slice(Math.max(0, indexTrouve - 4), indexTrouve);
+      if (fenetre.some(m => Moteur.NEGATIONS.has(m))) elementsContredits.push(el);
+      else elementsCorrects.push(el);
+    }
+    const ratio = elements.length ? elementsCorrects.length / elements.length : 0;
+    // Seuils adaptés au nombre d'éléments essentiels plutôt qu'à un pourcentage brut seul
+    // (§12) : sur une définition à 2 éléments, en manquer 1 fait déjà chuter à 50% — on
+    // reste donc "partiel" et non "fragile" tant qu'au moins la moitié est là.
+    let niveau, libelleNiveau;
+    if (elementsContredits.length && ratio < 0.8) { niveau = "incorrecte"; libelleNiveau = "Contient une contradiction"; }
+    else if (ratio >= 0.9) { niveau = "excellente"; libelleNiveau = "Excellente restitution"; }
+    else if (ratio >= 0.7) { niveau = "tresBonne"; libelleNiveau = "Très bonne restitution"; }
+    else if (ratio >= 0.45) { niveau = "partielle"; libelleNiveau = "Maîtrise partielle"; }
+    else if (ratio > 0) { niveau = "fragile"; libelleNiveau = "Définition fragile"; }
+    else { niveau = "nonMaitrisee"; libelleNiveau = "Non maîtrisée"; }
+    const correct = niveau === "excellente" || niveau === "tresBonne" ? true : niveau === "partielle" ? "partiel" : false;
+    return { elementsCorrects, elementsManques, elementsContredits, ratio, niveau, libelleNiveau, correct };
+  },
+
   // Retourne { correct, elementsCorrects?, elementsManques? } — forme commune à tous
   // les types d'exercice, consommée par la correction et par calculerRevisionSuivante.
   evaluer(exercice, notion, reponseUtilisateur){
@@ -1655,6 +1751,16 @@ const Moteur = {
         const assoc = reponseUtilisateur || {};
         const bonnes = paires.filter(p => assoc[p.id] === p.id).length;
         return { correct: bonnes === paires.length ? true : bonnes > 0 ? "partiel" : false };
+      }
+      case "identification": {
+        const choisis = new Set(reponseUtilisateur || []);
+        const bonnesReponses = exercice.donnees.bonnesReponses;
+        const elementsCorrects = bonnesReponses.filter(e => choisis.has(e));
+        const elementsManques = bonnesReponses.filter(e => !choisis.has(e));
+        const fauxPositifs = [...choisis].filter(e => !bonnesReponses.includes(e)).length;
+        const ratio = bonnesReponses.length ? elementsCorrects.length / bonnesReponses.length : 0;
+        const correct = ratio === 1 && fauxPositifs === 0 ? true : ratio >= 0.5 && fauxPositifs <= 1 ? "partiel" : false;
+        return { correct, elementsCorrects, elementsManques };
       }
       case "ordre": {
         const propose = reponseUtilisateur || [];
@@ -1782,6 +1888,41 @@ const Revision = {
     return Revision.fileDeRevision(notions).slice(0, n);
   },
 };
+
+/* ---------- D6. Séquences pédagogiques ("apprendre en profondeur" / "réviser") ---------- */
+// Une nouvelle notion se travaille en ~15 étapes progressives (apprendre), une notion déjà
+// vue en ~10 (réviser) — jamais comme 15/10 questions indépendantes : le résultat d'une
+// étape peut en insérer une autre (travail ciblé sur ce qui vient d'être oublié), et
+// `applicable` saute une étape qui n'a pas de sens pour CETTE notion précise (une définition
+// courte n'a pas 6 éléments à identifier, une notion seule dans son cours n'a personne à
+// associer) — la qualité prime sur le nombre exact d'étapes (voir PageSession.construireSequence).
+const SEQUENCE_APPRENTISSAGE = [
+  { cle: "reconnaissance", libelle: "Reconnaissance", type: "qcm", pourquoi: "Repère la bonne définition parmi plusieurs — la première rencontre la plus simple." },
+  { cle: "identification", libelle: "Identification des éléments", type: "identification", pourquoi: "Repère les éléments importants à retenir dans cette définition.", applicable: n => (n.elements||[]).length >= 2 },
+  { cle: "vrai_faux", libelle: "Vrai / Faux", type: "vrai_faux", pourquoi: "Vérifie que tu as compris, pas seulement reconnu." },
+  { cle: "association", libelle: "Association", type: "association", pourquoi: "Associe ce terme à sa définition, parmi d'autres notions.", applicable: n => Selecteurs.notionsValideesDeCours(n.coursId).filter(x => x.id !== n.id).length >= 3 },
+  { cle: "texte_trous", libelle: "Texte à trous", type: "texte_trous", indiceLettres: 2, pourquoi: "Complète les mots-clés — la première lettre est déjà là pour t'aider à démarrer." },
+  { cle: "texte_trous_avance", libelle: "Texte à trous avancé", type: "texte_trous", nbTrousMax: true, indiceLettres: 0, pourquoi: "Pareil, mais avec plus de mots à retrouver et sans indice cette fois.", applicable: n => (n.elements||[]).length >= 2 },
+  { cle: "reconstruction", libelle: "Reconstruction", type: "ordre", pourquoi: "Remets les éléments clés dans le bon ordre.", applicable: n => ["etape","liste"].includes(n.type) && (n.elements||[]).length >= 3 },
+  { cle: "mots_cles", libelle: "Mots-clés", type: "reponse_libre", motsCles: true, pourquoi: "Retrouve juste les mots essentiels, pas besoin d'une phrase complète." },
+  { cle: "rappel_indice", libelle: "Rappel avec indice", type: "reponse_libre", indiceAuto: true, pourquoi: "Commence à reconstruire la définition — un indice est déjà affiché pour t'aider." },
+  { cle: "rappel_aide_minimale", libelle: "Rappel avec aide minimale", type: "reponse_libre", pourquoi: "Presque seul(e) cette fois : l'indice reste possible, mais plus affiché d'office." },
+  { cle: "rappel_libre", libelle: "Rappel libre", type: "reponse_libre", sansIndice: true, pourquoi: "Seulement le terme : à toi de tout retrouver, sans aide du tout." },
+  { cle: "reecriture", libelle: "Réécriture", type: "reecriture", recapAvant: true, sansIndice: true, pourquoi: "Écris la définition complète, de mémoire." },
+  { cle: "restitution_finale", libelle: "Restitution finale", type: "reecriture", recapAvant: true, sansIndice: true, pourquoi: "Dernière relecture, puis réécris tout sans aide — c'est ce qui compte vraiment." },
+];
+const SEQUENCE_REVISION = [
+  { cle: "rappel_rapide", libelle: "Rappel rapide", type: "reponse_libre", pourquoi: "Un premier rappel, à ton rythme — tu connais déjà cette notion." },
+  { cle: "reconnaissance", libelle: "Reconnaissance", type: "qcm", pourquoi: "Reconnaître la bonne définition." },
+  { cle: "vrai_faux", libelle: "Vrai / Faux", type: "vrai_faux", pourquoi: "Vérifie un détail précis." },
+  { cle: "association", libelle: "Association", type: "association", pourquoi: "Associe ce terme aux autres notions.", applicable: n => Selecteurs.notionsValideesDeCours(n.coursId).filter(x => x.id !== n.id).length >= 3 },
+  { cle: "texte_trous", libelle: "Texte à trous", type: "texte_trous", indiceLettres: 0, pourquoi: "Complète les mots-clés, sans indice — tu connais déjà cette notion." },
+  { cle: "mots_cles", libelle: "Mots-clés", type: "reponse_libre", motsCles: true, pourquoi: "Retrouve les mots essentiels." },
+  { cle: "rappel_indice", libelle: "Rappel avec indice", type: "reponse_libre", pourquoi: "Un indice est là si besoin, mais essaie d'abord sans — tu connais déjà cette notion." },
+  { cle: "rappel_libre", libelle: "Rappel libre", type: "reponse_libre", sansIndice: true, pourquoi: "Seulement le terme, à toi de jouer." },
+  { cle: "travail_oublis", libelle: "Travail sur les éléments oubliés", type: "texte_trous", pourquoi: "On cible ce que tu oublies le plus souvent.", applicable: n => (n.progression.elementsOublies||[]).length > 0, forcerElementsOublies: true, indiceLettres: 1 },
+  { cle: "restitution_complete", libelle: "Restitution complète", type: "reecriture", recapAvant: true, sansIndice: true, pourquoi: "Réécris toute la définition, sans aide." },
+];
 
 /* ==================== E. AUTHENTIFICATION / PROFIL / ONBOARDING ==================== */
 
@@ -2040,7 +2181,7 @@ const Onboarding = {
   },
   etapeBienvenue(){
     return `<h1>Bienvenue${Etat.profil?.prenom ? ", " + Utils.echapperHtml(Etat.profil.prenom) : ""}</h1>
-      <p class="mt-sm">Memoria transforme tes cours en un programme de révision qui s'adapte à ce que tu retiens vraiment — pas juste à ce que tu réponds une fois.</p>
+      <p class="mt-sm">CartesFacile transforme tes cours en un programme de révision qui s'adapte à ce que tu retiens vraiment — pas juste à ce que tu réponds une fois.</p>
       <button class="bouton bouton-primaire bouton-large bouton-lg mt-lg" data-suivant>Commencer</button>`;
   },
   etapeMatieres(){
@@ -2061,7 +2202,7 @@ const Onboarding = {
   },
   etapePret(){
     return `<div class="texte-centre"><div class="anneau-progression">${icono("coche_cercle","icone-lg")}</div>
-      <h2 class="mt-md">Tout est prêt !</h2><p class="texte-2 mt-sm">Ajoute ton premier cours pour que Memoria commence à travailler pour toi.</p>
+      <h2 class="mt-md">Tout est prêt !</h2><p class="texte-2 mt-sm">Ajoute ton premier cours pour que CartesFacile commence à travailler pour toi.</p>
       <button class="bouton bouton-primaire bouton-large bouton-lg mt-lg" data-terminer="cours">Ajouter mon premier cours</button>
       <button class="bouton bouton-fantome bouton-large mt-sm" data-terminer="exemple">Découvrir avec un cours d'exemple</button>
       <button class="bouton bouton-fantome bouton-large" data-terminer="dashboard">Aller à mon tableau de bord</button></div>`;
@@ -2101,15 +2242,27 @@ const Onboarding = {
 
 /* ==================== F. ROUTEUR ET COQUILLE APPLICATIVE ==================== */
 
+// L'app distingue 9 destinations bien séparées (voir CLAUDE.md § Organisation) : le mobile
+// n'affiche que les 4 plus utilisées au quotidien en barre basse (les autres vont dans la
+// feuille "Plus", cf. Coquille.ouvrirMenuPlus) ; le bureau, qui a la place, les affiche toutes
+// dans la barre latérale. "Profil" n'a pas sa propre entrée : déjà accessible depuis l'avatar
+// de l'en-tête (Coquille.ouvrirMenuProfil), doublon inutile qui aurait mangé une place précieuse.
 const NAV_ITEMS = [
-  { cle: "dashboard", libelle: "Accueil", icone: "maison", route: "dashboard" },
-  { cle: "cours", libelle: "Cours", icone: "livre", route: "cours" },
-  { cle: "reviser", libelle: "Réviser", icone: "cerveau", route: "reviser" },
-  { cle: "calendrier", libelle: "Calendrier", icone: "calendrier", route: "calendrier", desktopSeulement: true },
-  { cle: "stats", libelle: "Progression", icone: "graphique", route: "stats" },
-  { cle: "profil", libelle: "Profil", icone: "utilisateur", route: "profil" },
+  { cle: "dashboard", libelle: "Accueil", icone: "maison", route: "dashboard", mobilePrincipal: true },
+  { cle: "cartes", libelle: "CartesFacile", icone: "zap", route: "cartes", mobilePrincipal: true },
+  { cle: "definitions", libelle: "Définitions", icone: "cerveau", route: "definitions", mobilePrincipal: true },
+  { cle: "reviser", libelle: "Révisions", icone: "horloge", route: "reviser", mobilePrincipal: true },
+  { cle: "cours", libelle: "Mes cours", icone: "livre", route: "cours" },
+  { cle: "erreurs", libelle: "Mes erreurs", icone: "alerte_triangle", route: "erreurs" },
+  { cle: "evaluations", libelle: "Évaluations", icone: "cible", route: "evaluations" },
+  { cle: "calendrier", libelle: "Calendrier", icone: "calendrier", route: "calendrier" },
+  { cle: "stats", libelle: "Statistiques", icone: "graphique", route: "stats" },
 ];
-const TITRES_PAGES = { dashboard: "Tableau de bord", cours: "Mes cours", cartes: "Cartes rapides", reviser: "Réviser", calendrier: "Calendrier", stats: "Progression", profil: "Profil", notion: "Notion", session: "Session", examen: "Mode examen" };
+const TITRES_PAGES = {
+  dashboard: "Tableau de bord", cours: "Mes cours", cartes: "CartesFacile", definitions: "Définitions",
+  reviser: "Révisions", erreurs: "Mes erreurs", evaluations: "Évaluations", calendrier: "Calendrier",
+  stats: "Statistiques", profil: "Profil", notion: "Notion", session: "Session", examen: "Mode examen",
+};
 
 const Routeur = {
   routes: [],
@@ -2164,7 +2317,7 @@ const Coquille = {
   },
   rendreBarreLaterale(){
     document.getElementById("barreLaterale").innerHTML = `
-      <div class="logo"><img src="icon.svg" alt=""><span>Memoria</span></div>
+      <div class="logo"><img src="icon.svg" alt=""><span>CartesFacile</span></div>
       <nav class="nav-laterale">${NAV_ITEMS.map(i => `<a href="#/${i.route}" class="lien-nav" data-route="${i.cle}">${icono(i.icone)}<span>${i.libelle}</span></a>`).join("")}</nav>
       <div class="flex-1"></div>
       <button class="bouton bouton-fantome bouton-large" data-action="deconnexion" style="justify-content:flex-start">${icono("deconnexion","icone-sm")} Déconnexion</button>
@@ -2179,12 +2332,34 @@ const Coquille = {
       <button class="avatar" data-action="menu-profil" aria-label="Menu profil">${Etat.profil?.photoURL ? `<img src="${Etat.profil.photoURL}" alt="">` : Utils.initiales(Etat.profil?.prenom, Etat.profil?.nom)}</button>
     `;
   },
+  // Mobile : seules les 4 destinations les plus utilisées au quotidien tiennent en barre
+  // basse ; les autres vivent dans la feuille "Plus" (même liste que la barre latérale,
+  // moins les 4 déjà visibles) plutôt que d'entasser 9 icônes illisibles.
   rendreNavBasse(){
-    const items = NAV_ITEMS.filter(i => !i.desktopSeulement);
-    document.getElementById("navBasse").innerHTML = items.map(i => `<a href="#/${i.route}" class="item-nav-basse" data-route="${i.cle}">${icono(i.icone)}<span>${i.libelle}</span></a>`).join("");
+    const principaux = NAV_ITEMS.filter(i => i.mobilePrincipal);
+    const reste = NAV_ITEMS.filter(i => !i.mobilePrincipal);
+    document.getElementById("navBasse").innerHTML = principaux.map(i => `<a href="#/${i.route}" class="item-nav-basse" data-route="${i.cle}">${icono(i.icone)}<span>${i.libelle}</span></a>`).join("")
+      + `<button type="button" class="item-nav-basse" id="boutonMenuPlus" data-route="__plus__">${icono("points_verticaux")}<span>Plus</span></button>`;
+    document.getElementById("boutonMenuPlus").addEventListener("click", () => Coquille.ouvrirMenuPlus(reste));
+  },
+  ouvrirMenuPlus(items){
+    document.getElementById("menuPlusOuvert")?.remove();
+    const racine = document.createElement("div");
+    racine.id = "menuPlusOuvert";
+    racine.className = "menu-plus";
+    racine.innerHTML = `<div class="feuille-menu-plus">
+      <div class="flex items-centre justify-entre mb-md"><h3>Plus</h3><button class="bouton-icone" data-fermer-plus aria-label="Fermer">${icono("croix")}</button></div>
+      <div class="flex-col gap-xs">${items.map(i => `<a href="#/${i.route}" class="item-menu" data-route="${i.cle}">${icono(i.icone,"icone-sm")}<span>${i.libelle}</span></a>`).join("")}</div>
+    </div>`;
+    racine.addEventListener("mousedown", (e) => { if (e.target === racine) racine.remove(); });
+    racine.querySelector("[data-fermer-plus]").addEventListener("click", () => racine.remove());
+    racine.querySelectorAll("[data-route]").forEach(a => a.addEventListener("click", () => racine.remove()));
+    document.body.appendChild(racine);
   },
   majNavigationActive(){
     document.querySelectorAll("[data-route]").forEach(el => el.classList.toggle("actif", el.dataset.route === Etat.ui.pageActuelle));
+    const boutonPlus = document.getElementById("boutonMenuPlus");
+    if (boutonPlus) boutonPlus.classList.toggle("actif", !NAV_ITEMS.find(i => i.mobilePrincipal && i.cle === Etat.ui.pageActuelle) && NAV_ITEMS.some(i => i.cle === Etat.ui.pageActuelle));
     const titreEl = document.getElementById("titrePageEntete");
     if (titreEl) titreEl.textContent = TITRES_PAGES[Etat.ui.pageActuelle] || "";
     const cloche = document.querySelector('[data-action="notifications"]');
@@ -2255,7 +2430,7 @@ const PageDashboard = {
     const principal = document.getElementById("contenu-principal");
     if (!Etat.donnees.cours.length) {
       principal.innerHTML = `<div class="salutation"><h1>Bonjour ${Utils.echapperHtml(Etat.profil.prenom||"")}</h1></div>
-        <div class="etat-vide">${icono("livre_ouvert","icone-lg")}<h3>Tu n'as encore aucun cours</h3><p>Ajoute ton premier cours pour que Memoria se mette au travail.</p>
+        <div class="etat-vide">${icono("livre_ouvert","icone-lg")}<h3>Tu n'as encore aucun cours</h3><p>Ajoute ton premier cours pour que CartesFacile se mette au travail.</p>
         <button class="bouton bouton-primaire bouton-lg mt-sm" data-action="aller" data-route="cours/nouveau">${icono("plus","icone-sm")} Ajouter mon premier cours</button></div>`;
       return;
     }
@@ -2422,7 +2597,10 @@ const PageCours = {
     if (params.matiere !== undefined) PageCours.filtres.matiere = params.matiere;
     Etat.ui.parametresPage = params;
     const principal = document.getElementById("contenu-principal");
-    let cours = Etat.donnees.cours.filter(c => !c.archive);
+    // Un paquet CartesFacile (origine "rapide") vit dans son propre onglet (G2c) — ne pas le
+    // montrer aussi ici évite exactement la confusion entre les deux fonctionnalités que le
+    // cahier des charges demande de ne jamais entretenir.
+    let cours = Etat.donnees.cours.filter(c => !c.archive && c.origine !== "rapide");
     if (PageCours.filtres.matiere) cours = cours.filter(c => c.matiereId === PageCours.filtres.matiere);
     if (PageCours.filtres.favoris) cours = cours.filter(c => c.favori);
     if (PageCours.filtres.recherche) {
@@ -2436,7 +2614,6 @@ const PageCours = {
         <div class="recherche-entete">${icono("recherche","icone-sm")}<input type="search" placeholder="Rechercher un cours..." value="${Utils.echapperHtml(PageCours.filtres.recherche)}" data-recherche-cours></div>
         <div class="flex gap-sm flex-wrap">
           <button class="bouton bouton-contour" data-gerer-matieres>${icono("engrenage","icone-sm")} Matières</button>
-          <button class="bouton bouton-secondaire" data-action="aller" data-route="cartes/nouveau">${icono("zap","icone-sm")} Cartes rapides</button>
           <button class="bouton bouton-primaire" data-action="aller" data-route="cours/nouveau">${icono("plus","icone-sm")} Nouveau cours</button>
         </div>
       </div>
@@ -2555,7 +2732,7 @@ const PageCartesRapides = {
     const principal = document.getElementById("contenu-principal");
     principal.innerHTML = `
       <div style="max-width:640px;margin:0 auto">
-        <a href="#/cours" class="texte-2 texte-petit flex items-centre gap-xs mb-md">${icono("fleche_gauche","icone-xs")} Retour</a>
+        <a href="#/cartes" class="texte-2 texte-petit flex items-centre gap-xs mb-md">${icono("fleche_gauche","icone-xs")} Retour</a>
         <h1 class="mb-sm">Cartes rapides</h1>
         <p class="texte-2 mb-lg">Pas besoin d'un cours entier : donne directement des termes et leurs définitions. Range-les dans un dossier et un chapitre existants pour t'entraîner plus tard sur toutes les définitions d'un coup, ou crée-en de nouveaux.</p>
         <div class="groupe-champ"><label>Matière</label><select class="champ" id="cr-matiere">${Etat.donnees.matieres.map(m => `<option value="${m.id}" ${PageCartesRapides.selection.matiereId===m.id?"selected":""}>${Utils.echapperHtml(m.nom)}</option>`).join("")}</select></div>
@@ -2567,7 +2744,7 @@ const PageCartesRapides = {
             <button class="bouton bouton-secondaire flex-1" id="cr-enregistrer">Enregistrer pour plus tard</button>
             <button class="bouton bouton-primaire flex-1" id="cr-apprendre">${icono("cerveau","icone-sm")} Créer et apprendre</button>
           </div>
-          <button class="bouton bouton-fantome" data-action="aller" data-route="cours">Annuler</button>
+          <button class="bouton bouton-fantome" data-action="aller" data-route="cartes">Annuler</button>
         </div>
       </div>`;
     PageCartesRapides.rendreDossierConfig();
@@ -2652,7 +2829,7 @@ const PageCartesRapides = {
     if (!cours) {
       const titreSaisi = document.getElementById("cr-titre")?.value.trim();
       const titre = titreSaisi || `Cartes rapides — ${Utils.formaterDateCourte(new Date())}`;
-      cours = await Store.ajouter("cours", { titre, matiereId, contenu: nouveauContenu, favori: false, archive: false });
+      cours = await Store.ajouter("cours", { titre, matiereId, contenu: nouveauContenu, favori: false, archive: false, origine: "rapide" });
     } else {
       // Un dossier existant reçoit un nouveau lot de cartes : on ajoute au contenu
       // affiché dans "Lire le cours" plutôt que de l'écraser.
@@ -2680,7 +2857,103 @@ const PageCartesRapides = {
     }
     Toast.succes(`${notionsCreees.length} carte${notionsCreees.length>1?"s":""} ajoutée${notionsCreees.length>1?"s":""} à « ${cours.titre} ».`);
     if (demarrerSession) PageSession.demarrerApprendre({ notions: notionsCreees, coursId: cours.id });
-    else Routeur.aller(`cours/${cours.id}`);
+    else Routeur.aller(`cartes/${cours.id}`);
+  },
+};
+
+/* ==================== G2c. CARTESFACILE (paquets) ==================== */
+// Objectif : un système de cartes simple pour apprendre/réviser, volontairement indépendant
+// de Définitions (G5b) même si les deux lisent les mêmes notions — "paquet" = un cours dont
+// origine==="rapide" (créé depuis Cartes rapides), voir Selecteurs.paquetsCartesFacile.
+const PageCartesFacile = {
+  filtres: { recherche: "", matiereId: "", favoris: false },
+
+  rendre(){
+    const principal = document.getElementById("contenu-principal");
+    const f = PageCartesFacile.filtres;
+    let paquets = Selecteurs.paquetsCartesFacile();
+    if (f.matiereId) paquets = paquets.filter(c => c.matiereId === f.matiereId);
+    if (f.favoris) paquets = paquets.filter(c => c.favori);
+    if (f.recherche) { const r = Utils.normaliserTexte(f.recherche); paquets = paquets.filter(c => Utils.normaliserTexte(c.titre).includes(r)); }
+    paquets = [...paquets].sort((a,b) => (b.favori - a.favori) || new Date(b.dateCreation) - new Date(a.dateCreation));
+
+    const toutesNotions = Selecteurs.notionsDePaquets();
+    const moyenne = toutesNotions.length ? Math.round(toutesNotions.reduce((s,n) => s+n.progression.maitriseActuelle,0)/toutesNotions.length) : 0;
+    const maitrisees = toutesNotions.filter(n => ["vert","bleu"].includes(n.progression.statut)).length;
+
+    principal.innerHTML = `
+      <p class="texte-2 mb-lg">Un système de cartes simple pour apprendre et réviser rapidement, sans passer par un cours entier.</p>
+      <div class="grille-stats-rapides">
+        <div class="carte stat-rapide"><span class="nombre">${Selecteurs.paquetsCartesFacile().length}</span><span class="texte-2 texte-petit">Paquets</span></div>
+        <div class="carte stat-rapide"><span class="nombre">${toutesNotions.length}</span><span class="texte-2 texte-petit">Cartes</span></div>
+        <div class="carte stat-rapide"><span class="nombre" style="color:var(--succes)">${maitrisees}</span><span class="texte-2 texte-petit">Maîtrisées</span></div>
+        <div class="carte stat-rapide"><span class="nombre">${moyenne}%</span><span class="texte-2 texte-petit">Maîtrise moyenne</span></div>
+      </div>
+      <div class="flex gap-sm flex-wrap mb-lg">
+        <button class="bouton bouton-primaire" data-action="aller" data-route="cartes/nouveau">${icono("plus","icone-sm")} Créer des cartes</button>
+        <button class="bouton bouton-secondaire" data-apprendre-tout ${toutesNotions.length?"":"disabled"}>${icono("livre_ouvert","icone-sm")} Apprendre</button>
+        <button class="bouton bouton-contour" data-reviser-tout ${toutesNotions.length?"":"disabled"}>${icono("cerveau","icone-sm")} Réviser</button>
+      </div>
+      <div class="flex items-centre justify-entre flex-wrap gap-sm mb-md">
+        <div class="recherche-entete">${icono("recherche","icone-sm")}<input type="search" placeholder="Rechercher un paquet..." value="${Utils.echapperHtml(f.recherche)}" data-recherche-cf></div>
+      </div>
+      <div class="onglets mb-lg" style="border-bottom:none;flex-wrap:wrap">
+        <button class="badge ${!f.matiereId && !f.favoris ? "badge-neutre" : ""}" style="cursor:pointer;border:1px solid var(--bordure)" data-filtre-matiere="">Toutes</button>
+        ${Etat.donnees.matieres.map(m => `<button class="badge" style="cursor:pointer;border:1px solid var(--bordure);${f.matiereId===m.id?`background:${m.couleur}22;color:${m.couleur};border-color:${m.couleur}`:""}" data-filtre-matiere="${m.id}">${Utils.echapperHtml(m.nom)}</button>`).join("")}
+        <button class="badge ${f.favoris ? "badge-neutre" : ""}" style="cursor:pointer;border:1px solid var(--bordure)" data-filtre-favoris>${icono("etoile","icone-xs")} Favoris</button>
+      </div>
+      ${paquets.length ? `<div class="grille-cartes">${paquets.map(c => PageCartesFacile.carteHtml(c)).join("")}</div>`
+        : carteVide("zap", Selecteurs.paquetsCartesFacile().length ? "Aucun paquet ne correspond" : "Aucun paquet pour l'instant", Selecteurs.paquetsCartesFacile().length ? "Essaie une autre recherche ou un autre filtre." : "Crée tes premières cartes rapides pour commencer.", `<button class="bouton bouton-primaire mt-sm" data-action="aller" data-route="cartes/nouveau">${icono("plus","icone-sm")} Créer des cartes</button>`)}
+    `;
+    PageCartesFacile.attacher(principal, toutesNotions);
+  },
+
+  carteHtml(c){
+    const matiere = Selecteurs.matiere(c.matiereId);
+    const notions = Selecteurs.notionsDeCours(c.id).filter(n => n.statutValidation === "gardee");
+    const moyenne = notions.length ? Math.round(notions.reduce((s,n) => s+n.progression.maitriseActuelle,0)/notions.length) : 0;
+    return `<div class="carte carte-cliquable carte-cours" style="--couleur-accent:${matiere?.couleur||"var(--primaire)"}" data-ouvrir-paquet="${c.id}">
+      <div class="entete-carte-cours">
+        <div>
+          <div class="texte-2 texte-petit">${Utils.echapperHtml(matiere?.nom || "Sans matière")}</div>
+          <h3 class="tronque">${Utils.echapperHtml(c.titre)}</h3>
+        </div>
+        <div class="flex items-centre gap-xs">
+          ${c.favori ? icono("etoile","icone-sm") : ""}
+          <button type="button" class="bouton-icone" data-options-paquet="${c.id}" aria-label="Options">${icono("points_verticaux")}</button>
+        </div>
+      </div>
+      <div class="meta-cours texte-2 texte-petit"><span>${notions.length} carte${notions.length>1?"s":""}</span></div>
+      ${notions.length ? barreProgressionHtml(moyenne) : `<span class="badge badge-neutre">Vide pour l'instant</span>`}
+    </div>`;
+  },
+
+  attacher(principal, toutesNotions){
+    principal.querySelector("[data-recherche-cf]").addEventListener("input", Utils.debounce((e) => { PageCartesFacile.filtres.recherche = e.target.value; PageCartesFacile.rendre(); }, 250));
+    principal.querySelectorAll("[data-filtre-matiere]").forEach(b => b.addEventListener("click", () => { PageCartesFacile.filtres.matiereId = b.dataset.filtreMatiere; PageCartesFacile.filtres.favoris = false; PageCartesFacile.rendre(); }));
+    principal.querySelector("[data-filtre-favoris]").addEventListener("click", () => { PageCartesFacile.filtres.favoris = !PageCartesFacile.filtres.favoris; PageCartesFacile.rendre(); });
+    principal.querySelector("[data-apprendre-tout]")?.addEventListener("click", () => PageSession.demarrerApprendre({ notions: toutesNotions }));
+    principal.querySelector("[data-reviser-tout]")?.addEventListener("click", () => PageSession.demarrer("reviser", { notions: toutesNotions }));
+    principal.querySelectorAll("[data-ouvrir-paquet]").forEach(el => el.addEventListener("click", () => Routeur.aller(`cartes/${el.dataset.ouvrirPaquet}`)));
+    principal.querySelectorAll("[data-options-paquet]").forEach(b => b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const cours = Selecteurs.cours(b.dataset.optionsPaquet);
+      const html = `
+        <button class="item-menu" data-opt="favori">${icono("etoile","icone-sm")} ${cours.favori?"Retirer des favoris":"Ajouter aux favoris"}</button>
+        <button class="item-menu" data-opt="modifier">${icono("crayon","icone-sm")} Modifier</button>
+        <button class="item-menu" data-opt="dupliquer">${icono("dossier","icone-sm")} Dupliquer</button>
+        <button class="item-menu danger" data-opt="supprimer">${icono("poubelle","icone-sm")} Supprimer</button>
+      `;
+      const panneau = Coquille.ouvrirMenuDeroulant(e.currentTarget, html);
+      panneau.querySelector('[data-opt="favori"]').onclick = async () => { await Store.modifier("cours", cours.id, { favori: !cours.favori }); panneau.remove(); PageCartesFacile.rendre(); };
+      panneau.querySelector('[data-opt="modifier"]').onclick = () => Routeur.aller(`cours/${cours.id}/editer`);
+      panneau.querySelector('[data-opt="dupliquer"]').onclick = async () => { const copie = await Store.dupliquerCoursAvecNotions(cours.id); panneau.remove(); Toast.succes("Paquet dupliqué."); Routeur.aller(`cartes/${copie.id}`); };
+      panneau.querySelector('[data-opt="supprimer"]').onclick = async () => {
+        panneau.remove();
+        const ok = await confirmerAction({ titre: "Supprimer ce paquet ?", message: "Toutes ses cartes et leur progression seront perdues définitivement.", libelleConfirmer: "Supprimer", danger: true });
+        if (ok) { await Store.supprimerCours(cours.id); Toast.succes("Paquet supprimé."); PageCartesFacile.rendre(); }
+      };
+    }));
   },
 };
 
@@ -2746,10 +3019,14 @@ const PageCoursDetail = {
     const matiere = Selecteurs.matiere(cours.matiereId);
     const notions = Selecteurs.notionsValideesDeCours(cours.id);
     const enAttente = Selecteurs.notionsAValiderDeCours(cours.id);
+    // Un paquet CartesFacile (origine "rapide") et un cours normal partagent cette même
+    // page de détail — seul le fil d'Ariane change, pour ramener vers le bon onglet.
+    const estPaquet = cours.origine === "rapide";
+    const retour = estPaquet ? { route: "cartes", libelle: "CartesFacile" } : { route: "cours", libelle: "Mes cours" };
 
     const entete = `
       <div class="entete-page-cours">
-        <a href="#/cours" class="texte-2 texte-petit flex items-centre gap-xs mb-md">${icono("fleche_gauche","icone-xs")} Mes cours</a>
+        <a href="#/${retour.route}" class="texte-2 texte-petit flex items-centre gap-xs mb-md">${icono("fleche_gauche","icone-xs")} ${retour.libelle}</a>
         <div class="flex items-centre justify-entre gap-sm">
           <div><div class="texte-2 texte-petit">${Utils.echapperHtml(matiere?.nom||"")}</div><h1>${Utils.echapperHtml(cours.titre)}</h1></div>
           <div class="menu-options"><button class="bouton-icone" data-options-cours aria-label="Options">${icono("points_verticaux")}</button></div>
@@ -2766,7 +3043,7 @@ const PageCoursDetail = {
     }
 
     if (!notions.length) {
-      principal.innerHTML = entete + carteVide("zap", "Prêt à transformer ce cours en exercices ?", "Memoria va lire ton cours et repérer ce qu'il y a vraiment à retenir.", `
+      principal.innerHTML = entete + carteVide("zap", "Prêt à transformer ce cours en exercices ?", "CartesFacile va lire ton cours et repérer ce qu'il y a vraiment à retenir.", `
         <button class="bouton bouton-primaire bouton-lg mt-sm" data-analyser>${icono("cerveau","icone-sm")} Analyser mon cours</button>
         <button class="bouton bouton-fantome mt-sm" data-action="aller" data-route="cours/${cours.id}/editer">${icono("crayon","icone-sm")} Modifier le contenu</button>`);
       principal.querySelector("[data-analyser]").addEventListener("click", () => PageCoursDetail.analyserCours(cours));
@@ -2867,17 +3144,23 @@ const PageCoursDetail = {
         <button class="item-menu danger" data-opt="supprimer">${icono("poubelle","icone-sm")} Supprimer</button>
       `;
       const panneau = Coquille.ouvrirMenuDeroulant(e.currentTarget, html);
+      const retour = cours.origine === "rapide" ? "cartes" : "cours";
       panneau.querySelector('[data-opt="favori"]').onclick = async () => { await Store.modifier("cours", cours.id, { favori: !cours.favori }); panneau.remove(); PageCoursDetail.rendre({ id: cours.id }); };
       panneau.querySelector('[data-opt="editer"]').onclick = () => Routeur.aller(`cours/${cours.id}/editer`);
       panneau.querySelector('[data-opt="dupliquer"]').onclick = async () => {
-        const copie = await Store.ajouter("cours", { titre: cours.titre + " (copie)", matiereId: cours.matiereId, contenu: cours.contenu, favori: false, archive: false });
-        Toast.succes("Cours dupliqué."); Routeur.aller(`cours/${copie.id}`);
+        // Un paquet CartesFacile n'a pas de texte à ré-analyser : on recopie directement
+        // ses cartes. Un cours normal, lui, ne duplique que le texte source (comportement
+        // d'origine, inchangé) — l'utilisateur le ré-analysera s'il le souhaite.
+        const copie = cours.origine === "rapide"
+          ? await Store.dupliquerCoursAvecNotions(cours.id)
+          : await Store.ajouter("cours", { titre: cours.titre + " (copie)", matiereId: cours.matiereId, contenu: cours.contenu, favori: false, archive: false });
+        Toast.succes("Dupliqué."); Routeur.aller(`${retour}/${copie.id}`);
       };
-      panneau.querySelector('[data-opt="archiver"]').onclick = async () => { await Store.modifier("cours", cours.id, { archive: !cours.archive }); panneau.remove(); Routeur.aller("cours"); };
+      panneau.querySelector('[data-opt="archiver"]').onclick = async () => { await Store.modifier("cours", cours.id, { archive: !cours.archive }); panneau.remove(); Routeur.aller(retour); };
       panneau.querySelector('[data-opt="supprimer"]').onclick = async () => {
         panneau.remove();
         const ok = await confirmerAction({ titre: "Supprimer ce cours ?", message: "Toutes ses notions et sa progression seront perdues définitivement.", libelleConfirmer: "Supprimer", danger: true });
-        if (ok) { await Store.supprimerCours(cours.id); Toast.succes("Cours supprimé."); Routeur.aller("cours"); }
+        if (ok) { await Store.supprimerCours(cours.id); Toast.succes("Cours supprimé."); Routeur.aller(retour); }
       };
     });
   },
@@ -3008,18 +3291,141 @@ const PageNotion = {
   },
 };
 
+/* ==================== G5b. DÉFINITIONS (vue d'ensemble) ==================== */
+// Objectif de cette page : apprendre précisément des définitions et être capable de les
+// restituer entièrement — distinct de CartesFacile (G2c), pensé pour un usage plus simple
+// et rapide. Les deux s'appuient sur les mêmes notions Firestore, mais n'affichent jamais
+// les mêmes actions : ici, la sélection multiple sert à construire une Évaluation (G8b).
+const PageDefinitions = {
+  filtres: { recherche: "", matiereId: "", coursId: "", chapitreId: "", niveau: "toutes" },
+  selection: new Set(),
+
+  rendre(){
+    const principal = document.getElementById("contenu-principal");
+    const toutes = Selecteurs.toutesNotionsValidees();
+    const f = PageDefinitions.filtres;
+    let notions = toutes;
+    if (f.matiereId) notions = notions.filter(n => n.matiereId === f.matiereId);
+    if (f.coursId) notions = notions.filter(n => n.coursId === f.coursId);
+    if (f.chapitreId) notions = notions.filter(n => n.chapitreId === f.chapitreId);
+    if (f.niveau === "a_apprendre") notions = notions.filter(n => n.progression.etapeIndex === 0);
+    else if (f.niveau === "fragiles") notions = notions.filter(n => ["rouge","orange"].includes(n.progression.statut));
+    else if (f.niveau === "maitrisees") notions = notions.filter(n => ["vert","bleu"].includes(n.progression.statut));
+    if (f.recherche) {
+      const r = Utils.normaliserTexte(f.recherche);
+      notions = notions.filter(n => Utils.normaliserTexte(n.titre).includes(r) || Utils.normaliserTexte(n.reponse).includes(r));
+    }
+    notions.sort((a,b) => Revision.calculerPriorite(b) - Revision.calculerPriorite(a));
+    // Un filtre ne doit jamais laisser une sélection "fantôme" sur des cartes qui ne sont
+    // plus affichées — sans ça, "Créer une évaluation" pourrait inclure des définitions
+    // invisibles à l'écran, ce qui serait très surprenant.
+    const idsVisibles = new Set(notions.map(n => n.id));
+    for (const id of [...PageDefinitions.selection]) if (!idsVisibles.has(id)) PageDefinitions.selection.delete(id);
+
+    const coursOptions = f.matiereId ? Etat.donnees.cours.filter(c => c.matiereId === f.matiereId && !c.archive) : [];
+    const chapitreOptions = f.coursId ? Selecteurs.chapitresDeCours(f.coursId) : [];
+
+    principal.innerHTML = `
+      <p class="texte-2 mb-lg">Apprends précisément tes définitions et vérifie ce que tu es réellement capable de restituer.</p>
+      <div class="flex items-centre justify-entre flex-wrap gap-sm mb-md">
+        <div class="recherche-entete">${icono("recherche","icone-sm")}<input type="search" placeholder="Rechercher une définition..." value="${Utils.echapperHtml(f.recherche)}" data-recherche-def></div>
+      </div>
+      <div class="flex gap-sm flex-wrap mb-sm">
+        <select class="champ" style="width:auto" data-filtre="matiereId"><option value="">Toutes les matières</option>${Etat.donnees.matieres.map(m => `<option value="${m.id}" ${f.matiereId===m.id?"selected":""}>${Utils.echapperHtml(m.nom)}</option>`).join("")}</select>
+        <select class="champ" style="width:auto" data-filtre="coursId" ${coursOptions.length?"":"disabled"}><option value="">Tous les dossiers</option>${coursOptions.map(c => `<option value="${c.id}" ${f.coursId===c.id?"selected":""}>${Utils.echapperHtml(c.titre)}</option>`).join("")}</select>
+        <select class="champ" style="width:auto" data-filtre="chapitreId" ${chapitreOptions.length?"":"disabled"}><option value="">Tous les chapitres</option>${chapitreOptions.map(ch => `<option value="${ch.id}" ${f.chapitreId===ch.id?"selected":""}>${Utils.echapperHtml(ch.titre)}</option>`).join("")}</select>
+      </div>
+      <div class="onglets mb-lg" style="border-bottom:none;flex-wrap:wrap">
+        ${[["toutes","Toutes"],["a_apprendre","À apprendre"],["fragiles","Fragiles"],["maitrisees","Maîtrisées"]].map(([v,l]) => `<button class="badge ${f.niveau===v?"badge-neutre":""}" style="cursor:pointer;border:1px solid var(--bordure)" data-niveau="${v}">${l}</button>`).join("")}
+      </div>
+      <div class="flex items-centre justify-entre flex-wrap gap-sm mb-md">
+        <span class="texte-2 texte-petit">${notions.length} définition${notions.length>1?"s":""}${PageDefinitions.selection.size ? ` · ${PageDefinitions.selection.size} sélectionnée${PageDefinitions.selection.size>1?"s":""}` : ""}</span>
+        <div class="flex gap-sm flex-wrap">
+          <button class="bouton bouton-contour bouton-sm" data-tout-selectionner>${icono("coche","icone-xs")} Tout sélectionner</button>
+          <button class="bouton bouton-contour bouton-sm" data-deselectionner ${PageDefinitions.selection.size?"":"disabled"}>Désélectionner</button>
+        </div>
+      </div>
+      ${notions.length ? `<div class="flex-col gap-sm" id="listeDefinitions">${notions.map(n => PageDefinitions.carteHtml(n)).join("")}</div>`
+        : carteVide("cerveau", toutes.length ? "Aucune définition ne correspond" : "Aucune définition pour l'instant", toutes.length ? "Essaie une autre recherche ou un autre filtre." : "Crée un cours ou des cartes rapides pour commencer.")}
+      <div class="barre-selection-flottante ${PageDefinitions.selection.size ? "visible" : ""}">
+        <span class="texte-petit texte-semi">${PageDefinitions.selection.size} sélectionnée${PageDefinitions.selection.size>1?"s":""}</span>
+        <div class="flex gap-sm">
+          <button class="bouton bouton-secondaire bouton-sm" data-travailler-oublis>${icono("cible","icone-sm")} Travailler mes oublis</button>
+          <button class="bouton bouton-primaire" data-creer-evaluation>${icono("crayon","icone-sm")} Créer une évaluation</button>
+        </div>
+      </div>
+    `;
+    PageDefinitions.attacher(principal, notions);
+  },
+
+  carteHtml(n){
+    const cochee = PageDefinitions.selection.has(n.id);
+    const p = n.progression;
+    return `<div class="carte carte-definition ${cochee?"selectionnee":""}" data-carte-def="${n.id}">
+      <div class="flex gap-sm" style="align-items:flex-start">
+        <input type="checkbox" data-case-def="${n.id}" ${cochee?"checked":""} style="width:20px;height:20px;accent-color:var(--primaire);cursor:pointer;flex-shrink:0;margin-top:.2rem">
+        <div class="flex-1" style="min-width:0">
+          <div class="flex items-centre justify-entre gap-sm flex-wrap">
+            <a href="#/notion/${n.id}" class="texte-semi tronque">${Utils.echapperHtml(n.titre)}</a>
+            ${badgeStatut(p.statut)}
+          </div>
+          <p class="texte-2 texte-petit mt-xs" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${Utils.echapperHtml(n.reponse)}</p>
+          <div class="flex gap-md flex-wrap texte-xs texte-2 mt-xs">
+            <span>Maîtrise : <strong>${p.maitriseActuelle}%</strong></span>
+            <span>Durable : <strong>${p.maitriseDurable}%</strong></span>
+            <span>Prochaine révision : <strong>${Utils.formaterDateRelative(p.prochaineRevision)}</strong></span>
+          </div>
+          ${(p.elementsOublies||[]).length ? `<div class="liste-elements-verifies mt-xs">${p.elementsOublies.slice(0,6).map(e => `<span class="element-verifie oublie">${icono("croix","icone-xs")}${Utils.echapperHtml(e)}</span>`).join("")}</div>` : ""}
+        </div>
+      </div>
+    </div>`;
+  },
+
+  attacher(principal, notions){
+    principal.querySelector("[data-recherche-def]").addEventListener("input", Utils.debounce((e) => { PageDefinitions.filtres.recherche = e.target.value; PageDefinitions.rendre(); }, 250));
+    principal.querySelector('[data-filtre="matiereId"]').addEventListener("change", (e) => { PageDefinitions.filtres.matiereId = e.target.value; PageDefinitions.filtres.coursId = ""; PageDefinitions.filtres.chapitreId = ""; PageDefinitions.rendre(); });
+    principal.querySelector('[data-filtre="coursId"]').addEventListener("change", (e) => { PageDefinitions.filtres.coursId = e.target.value; PageDefinitions.filtres.chapitreId = ""; PageDefinitions.rendre(); });
+    principal.querySelector('[data-filtre="chapitreId"]').addEventListener("change", (e) => { PageDefinitions.filtres.chapitreId = e.target.value; PageDefinitions.rendre(); });
+    principal.querySelectorAll("[data-niveau]").forEach(b => b.addEventListener("click", () => { PageDefinitions.filtres.niveau = b.dataset.niveau; PageDefinitions.rendre(); }));
+    principal.querySelectorAll("[data-case-def]").forEach(c => c.addEventListener("change", () => {
+      if (c.checked) PageDefinitions.selection.add(c.dataset.caseDef); else PageDefinitions.selection.delete(c.dataset.caseDef);
+      PageDefinitions.rendre();
+    }));
+    principal.querySelector("[data-tout-selectionner]").addEventListener("click", () => { notions.forEach(n => PageDefinitions.selection.add(n.id)); PageDefinitions.rendre(); });
+    principal.querySelector("[data-deselectionner]").addEventListener("click", () => { PageDefinitions.selection.clear(); PageDefinitions.rendre(); });
+    principal.querySelector("[data-travailler-oublis]").addEventListener("click", () => {
+      const cible = PageDefinitions.selection.size
+        ? notions.filter(n => PageDefinitions.selection.has(n.id))
+        : Selecteurs.toutesNotionsValidees().filter(n => (n.progression.elementsOublies||[]).length);
+      if (!cible.length) return Toast.afficher("Aucun élément oublié à retravailler pour l'instant.", "info");
+      PageSession.demarrer("cible", { notions: cible });
+    });
+    principal.querySelector("[data-creer-evaluation]").addEventListener("click", () => {
+      if (!PageDefinitions.selection.size) return Toast.erreur("Sélectionne au moins une définition.");
+      Etat.ui.selectionEvaluation = [...PageDefinitions.selection];
+      Routeur.aller("evaluations/nouvelle");
+    });
+  },
+};
+
 /* ==================== G6. SESSION D'EXERCICES ==================== */
 const PageSession = {
   file: [], index: 0, mode: "", coursId: null, stats: null, exerciceActuel: null, indiceNiveau: 0, decouverteVues: new Set(),
-  etatDrill: {}, totalDrill: 0, dossierValidationCible: null, modePedagogique: false,
+  etatDrill: {}, totalDrill: 0, dossierValidationCible: null, modePedagogique: false, etatSequence: {}, etapeActuelle: null,
 
-  // "apprendre" (notions neuves), "apprentissage" (les mêmes notions neuves, mais en mode
-  // pédagogique très ralenti — voir plus bas) et "interrogation" (un dossier entier, sans
-  // tenir compte des dates dues) partagent le même moteur "drill" : on boucle sur CHAQUE
-  // notion avec des exercices variés jusqu'à ce que l'utilisateur dise "je connais", auquel
-  // cas une réécriture complète sert de confirmation finale — une seule bonne réponse ne
-  // suffit jamais (§64 : ne pas laisser 100% sur un simple QCM).
-  estDrill(){ return PageSession.mode === "apprendre" || PageSession.mode === "apprentissage" || PageSession.mode === "interrogation"; },
+  // "apprendre" (notions neuves) et "interrogation" (un dossier entier, sans tenir compte
+  // des dates dues) partagent le moteur "drill" : on boucle sur CHAQUE notion avec des
+  // exercices variés jusqu'à ce que l'utilisateur dise "je connais", auquel cas une
+  // réécriture complète sert de confirmation finale — une seule bonne réponse ne suffit
+  // jamais (§64 : ne pas laisser 100% sur un simple QCM). "apprentissage" (apprendre en
+  // profondeur) et "reviser" utilisent un moteur différent, à séquence fixe — voir estSequence().
+  estDrill(){ return PageSession.mode === "apprendre" || PageSession.mode === "interrogation"; },
+  // "apprentissage" (15 étapes environ, notions neuves) et "reviser" (10 étapes environ,
+  // notions déjà vues et dues) partagent ce second moteur : une séquence de PLUSIEURS
+  // exercices construite une fois par notion (PageSession.construireSequence), qu'on
+  // parcourt étape par étape jusqu'à une restitution finale sans aide — jamais un simple
+  // "je connais/je continue" laissé à l'appréciation de l'utilisateur.
+  estSequence(){ return PageSession.mode === "apprentissage" || PageSession.mode === "reviser"; },
 
   // Point d'entrée commun à tous les boutons "Apprendre" : on demande d'abord si
   // l'utilisateur veut le format habituel (rapide, existant, inchangé) ou le format
@@ -3035,7 +3441,7 @@ const PageSession = {
         </button>
         <button type="button" class="bouton bouton-primaire" style="text-align:left;height:auto;padding:var(--espace-md);white-space:normal" data-choix="apprentissage">
           <div class="texte-semi">${icono("livre_ouvert","icone-sm")} Apprendre en profondeur</div>
-          <div class="texte-2 texte-petit mt-xs" style="opacity:.9">Plus posé : on prend le temps, avec des relectures et une progression en douceur.</div>
+          <div class="texte-2 texte-petit mt-xs" style="opacity:.9">Plus posé : environ 15 étapes progressives, avec relectures et récapitulatifs.</div>
         </button>
       </div>
       <button class="bouton bouton-fantome bouton-large mt-md" data-fermer>Annuler</button>
@@ -3065,19 +3471,22 @@ const PageSession = {
       Routeur.aller(opts.coursId ? `cours/${opts.coursId}` : "reviser");
       return;
     }
-    // En mode pédagogique on prend le temps : peu de notions à la fois (8) plutôt que 30,
-    // pour ne jamais donner l'impression d'une liste interminable.
-    const plafond = mode === "apprentissage" ? 8 : (mode === "reviser" || mode === "apprendre") ? 30 : notions.length;
+    // Chaque notion d'une séquence pédagogique prend ~10-15 exercices : un lot de 30 comme
+    // pour le drill classique tournerait des heures. On reste volontairement petit (8-10).
+    const plafond = mode === "apprentissage" ? 8 : mode === "reviser" ? 10 : mode === "apprendre" ? 30 : notions.length;
     PageSession.file = Utils.melanger(notions).map(n => n.id).slice(0, plafond);
     PageSession.index = 0; PageSession.mode = mode; PageSession.coursId = opts.coursId || null;
     PageSession.decouverteVues = new Set();
     PageSession.modePedagogique = mode === "apprentissage";
     PageSession.stats = { debut: Date.now(), reussites: 0, echecs: 0, partiels: 0, aRetravailler: [], notionsMaitrisees: 0 };
-    PageSession.etatDrill = {}; PageSession.totalDrill = 0; PageSession.dossierValidationCible = null;
+    PageSession.etatDrill = {}; PageSession.etatSequence = {}; PageSession.totalDrill = 0; PageSession.dossierValidationCible = null;
     if (PageSession.estDrill()) {
-      PageSession.file.forEach(id => { PageSession.etatDrill[id] = { typesUtilises: new Set(), demandeReecriture: false, transitionVue: false, recapVu: false }; });
+      PageSession.file.forEach(id => { PageSession.etatDrill[id] = { typesUtilises: new Set(), demandeReecriture: false }; });
       PageSession.totalDrill = PageSession.file.length;
       if (mode === "interrogation") PageSession.dossierValidationCible = opts.chapitreId ? { type: "chapitres", id: opts.chapitreId } : opts.coursId ? { type: "cours", id: opts.coursId } : null;
+    } else if (PageSession.estSequence()) {
+      PageSession.file.forEach(id => { PageSession.etatSequence[id] = { sequence: null, pos: 0, remediationFaite: false }; });
+      PageSession.totalDrill = PageSession.file.length;
     }
     Routeur.aller("session/actif");
   },
@@ -3086,6 +3495,7 @@ const PageSession = {
 
   rendre(){
     if (PageSession.estDrill()) { PageSession.rendreDrill(); return; }
+    if (PageSession.estSequence()) { PageSession.rendreSequence(); return; }
     if (PageSession.index >= PageSession.file.length) { PageSession.terminer(); return; }
     const notion = PageSession.notionActuelle();
     if (!notion || notion.statutValidation !== "gardee") { PageSession.index++; PageSession.rendre(); return; }
@@ -3101,13 +3511,8 @@ const PageSession = {
     const id = PageSession.file[PageSession.index];
     const notion = Selecteurs.notion(id);
     if (!notion || notion.statutValidation !== "gardee") { PageSession.file.splice(PageSession.index, 1); delete PageSession.etatDrill[id]; PageSession.rendreDrill(); return; }
-    if ((PageSession.mode === "apprendre" || PageSession.mode === "apprentissage") && notion.progression.etapeIndex === 0 && !PageSession.decouverteVues.has(id)) { PageSession.rendreDecouverte(notion); return; }
+    if (PageSession.mode === "apprendre" && notion.progression.etapeIndex === 0 && !PageSession.decouverteVues.has(id)) { PageSession.rendreDecouverte(notion); return; }
     const etat = PageSession.etatDrill[id];
-    // Mode pédagogique : deux pauses en plus du drill habituel — une transition avant le
-    // tout premier exercice (pour ne pas enchaîner brutalement après la découverte), et un
-    // récapitulatif complet juste avant la réécriture finale (le moment le plus exigeant).
-    if (PageSession.modePedagogique && !etat.transitionVue) { PageSession.rendreTransition(notion, etat); return; }
-    if (PageSession.modePedagogique && etat.demandeReecriture && !etat.recapVu) { PageSession.rendreRecapFinal(notion, etat); return; }
     const type = etat.demandeReecriture ? "reecriture" : PageSession.choisirTypeDrill(notion, etat);
     PageSession.exerciceActuel = Moteur.genererExercice(notion, type);
     etat.typesUtilises.add(PageSession.exerciceActuel.type);
@@ -3117,16 +3522,12 @@ const PageSession = {
 
   // Ne répète jamais un type déjà vu pour CETTE notion tant qu'il en reste un nouveau à
   // essayer (c'est précisément ce qui manquait : avant, une notion neuve ne recevait
-  // jamais qu'un seul QCM avant de passer à la suivante). En mode pédagogique, l'ordre
-  // n'est en plus jamais mélangé : on part toujours du plus facile (reconnaissance) vers
-  // le plus dur (réponse libre), pour ne jamais tomber sur l'exercice le plus exigeant en
-  // tout premier — exactement ce qui rendait le mode "apprendre" habituel trop rude.
+  // jamais qu'un seul QCM avant de passer à la suivante).
   choisirTypeDrill(notion, etat){
     const ordre = ["qcm", "vrai_faux", "texte_trous", "association", "ordre", "reponse_libre"];
     let candidats = ordre.filter(t => !etat.typesUtilises.has(t));
     if (!candidats.length) candidats = ordre;
-    const sequence = PageSession.modePedagogique ? candidats : Utils.melanger(candidats);
-    for (const t of sequence) {
+    for (const t of Utils.melanger(candidats)) {
       if (Moteur.genererExercice(notion, t).type === t) return t;
     }
     return "reponse_libre";
@@ -3134,7 +3535,7 @@ const PageSession = {
 
   enveloppe(contenuHtml){
     let pct, compteur;
-    if (PageSession.estDrill()) {
+    if (PageSession.estDrill() || PageSession.estSequence()) {
       const total = PageSession.totalDrill || PageSession.file.length || 1;
       const faites = PageSession.stats.notionsMaitrisees || 0;
       pct = Math.round((faites / total) * 100);
@@ -3155,7 +3556,7 @@ const PageSession = {
 
   rendreDecouverte(notion){
     const principal = document.getElementById("contenu-principal");
-    const pedagogique = PageSession.modePedagogique;
+    const pedagogique = PageSession.mode === "apprentissage";
     principal.innerHTML = PageSession.enveloppe(`
       <div class="carte-question texte-centre">
         <span class="badge badge-neutre" style="align-self:center">Nouvelle notion</span>
@@ -3170,10 +3571,46 @@ const PageSession = {
     principal.querySelector("[data-a-toi]").addEventListener("click", () => { PageSession.decouverteVues.add(notion.id); PageSession.rendre(); });
   },
 
-  // Pause explicite entre la découverte et le premier exercice, uniquement en mode
-  // pédagogique — annonce le déroulé à venir plutôt que d'enchaîner brutalement sur un
-  // exercice noté, ce qui donnait l'impression d'un examen surprise juste après la lecture.
-  rendreTransition(notion, etat){
+  // -- G6b. Séquences pédagogiques : "apprentissage" (15 étapes) et "reviser" (10 étapes) --
+  // Construit UNE FOIS la séquence propre à cette notion à partir du modèle général :
+  // saute les étapes non pertinentes (§27 — pas de reconstruction sans ≥3 éléments, pas
+  // d'association seul dans son cours...), et insère un écran de récapitulatif juste avant
+  // chaque étape de restitution complète (recapAvant), moment le plus exigeant de la séquence.
+  construireSequence(notion, modele){
+    const etapes = [];
+    modele.filter(e => !e.applicable || e.applicable(notion)).forEach((e) => {
+      if (e.recapAvant) etapes.push({ ecran: "recap", modele: e });
+      etapes.push(e);
+    });
+    if (PageSession.mode === "apprentissage") etapes.unshift({ ecran: "transition" });
+    return etapes;
+  },
+
+  // Étape de remédiation insérée à la volée quand la restitution finale échoue (§17) : cible
+  // précisément ce qui a été oublié, plutôt que de tout recommencer depuis le début.
+  etapeRemediation(elementsManques){
+    if (elementsManques?.length) return { cle: "travail_cible", libelle: "Travail ciblé", type: "texte_trous", forcerMots: elementsManques.slice(0,3), indiceLettres: 1, pourquoi: "On retravaille juste ce qui t'a échappé." };
+    return { cle: "travail_cible", libelle: "Travail ciblé", type: "reponse_libre", pourquoi: "On retente un rappel complet avant de réessayer." };
+  },
+
+  rendreSequence(){
+    if (!PageSession.file.length) { PageSession.terminer(); return; }
+    if (PageSession.index >= PageSession.file.length) PageSession.index = 0;
+    const id = PageSession.file[PageSession.index];
+    const notion = Selecteurs.notion(id);
+    if (!notion || notion.statutValidation !== "gardee") { PageSession.file.splice(PageSession.index, 1); delete PageSession.etatSequence[id]; PageSession.rendreSequence(); return; }
+    if (PageSession.mode === "apprentissage" && notion.progression.etapeIndex === 0 && !PageSession.decouverteVues.has(id)) { PageSession.rendreDecouverte(notion); return; }
+    const etat = PageSession.etatSequence[id];
+    if (!etat.sequence) etat.sequence = PageSession.construireSequence(notion, PageSession.mode === "apprentissage" ? SEQUENCE_APPRENTISSAGE : SEQUENCE_REVISION);
+    if (etat.pos >= etat.sequence.length) { PageSession.notionSequenceTerminee(notion, etat, true); return; }
+    const etape = etat.sequence[etat.pos];
+    if (etape.ecran === "transition") { PageSession.rendreTransitionSequence(notion, etat); return; }
+    if (etape.ecran === "recap") { PageSession.rendreRecapEtape(notion, etat, etape.modele); return; }
+    if (etape.ecran === "recap-echec") { PageSession.rendreRecapEchec(notion, etat, etape.elementsManques); return; }
+    PageSession.genererEtRendreEtape(notion, etat, etape);
+  },
+
+  rendreTransitionSequence(notion, etat){
     const principal = document.getElementById("contenu-principal");
     principal.innerHTML = PageSession.enveloppe(`
       <div class="carte-question texte-centre">
@@ -3181,32 +3618,107 @@ const PageSession = {
         <h2 class="mt-md">On y va doucement</h2>
         <p class="texte-2 mt-sm">Pour « ${Utils.echapperHtml(notion.titre)} », voici comment ça va se passer :</p>
         <ul class="flex-col gap-xs mt-md" style="text-align:left;max-width:340px;margin:0 auto">
-          <li class="flex items-centre gap-sm">${icono("coche","icone-sm")}<span>Des exercices variés, du plus simple au plus difficile</span></li>
-          <li class="flex items-centre gap-sm">${icono("coche","icone-sm")}<span>Une correction détaillée après chacun, sans pénalité</span></li>
-          <li class="flex items-centre gap-sm">${icono("coche","icone-sm")}<span>Un récapitulatif avant le test final de mémoire</span></li>
+          <li class="flex items-centre gap-sm">${icono("coche","icone-sm")}<span>Une petite quinzaine d'étapes, du plus simple au plus difficile</span></li>
+          <li class="flex items-centre gap-sm">${icono("coche","icone-sm")}<span>Une correction détaillée après chacune, sans pénalité</span></li>
+          <li class="flex items-centre gap-sm">${icono("coche","icone-sm")}<span>Un récapitulatif avant chaque test de mémoire complet</span></li>
         </ul>
         <button class="bouton bouton-primaire bouton-lg mt-lg" data-continuer>Commencer les exercices</button>
       </div>`);
-    principal.querySelector("[data-continuer]").addEventListener("click", () => { etat.transitionVue = true; PageSession.rendre(); });
+    principal.querySelector("[data-continuer]").addEventListener("click", () => { etat.pos++; PageSession.rendreSequence(); });
   },
 
-  // Récapitulatif complet juste avant la réécriture finale — c'est l'étape la plus dure du
-  // drill (tout redonner de mémoire), donc en mode pédagogique on offre une dernière
-  // relecture ciblée juste avant, plutôt que d'enchaîner directement dessus.
-  rendreRecapFinal(notion, etat){
+  // Récapitulatif complet juste avant une étape de restitution (réécriture/restitution finale
+  // ou complète) — le moment le plus exigeant de la séquence, donc une dernière relecture
+  // ciblée juste avant plutôt que d'enchaîner directement dessus.
+  rendreRecapEtape(notion, etat, etapeSuivante){
     const principal = document.getElementById("contenu-principal");
     principal.innerHTML = PageSession.enveloppe(`
       <div class="carte-question texte-centre">
         <span class="badge badge-vert" style="align-self:center">${icono("coche_cercle","icone-xs")} Récapitulatif</span>
         <h2 class="mt-md">${Utils.echapperHtml(notion.titre)}</h2>
-        <p class="texte-2 mt-sm">Dernière relecture avant le grand test — tu vas devoir tout réécrire de mémoire juste après.</p>
+        <p class="texte-2 mt-sm">Dernière relecture avant le test — tu vas devoir tout réécrire de mémoire juste après.</p>
         <ul class="flex-col gap-xs mt-md" style="text-align:left;max-width:340px;margin:0 auto">
           ${(notion.elements?.length ? notion.elements : [notion.reponse]).map(e => `<li class="flex items-centre gap-sm">${icono("coche","icone-sm")}<span>${Utils.echapperHtml(e)}</span></li>`).join("")}
         </ul>
         <p class="texte-2 texte-petit mt-md">${Utils.echapperHtml(notion.reponse)}</p>
-        <button class="bouton bouton-primaire bouton-lg mt-lg" data-continuer>Je suis prêt(e), je réécris tout</button>
+        <button class="bouton bouton-primaire bouton-lg mt-lg" data-continuer>${etapeSuivante.libelle==="Réécriture"||etapeSuivante.libelle==="Restitution finale"||etapeSuivante.libelle==="Restitution complète" ? "Je suis prêt(e), je réécris tout" : "Continuer"}</button>
       </div>`);
-    principal.querySelector("[data-continuer]").addEventListener("click", () => { etat.recapVu = true; PageSession.rendre(); });
+    principal.querySelector("[data-continuer]").addEventListener("click", () => { etat.pos++; PageSession.rendreSequence(); });
+  },
+
+  // Écran affiché quand une restitution finale échoue, juste avant l'étape de remédiation
+  // ciblée insérée dynamiquement — annonce clairement ce qui va être retravaillé plutôt que
+  // de repartir directement sur un nouvel exercice sans explication.
+  rendreRecapEchec(notion, etat, elementsManques){
+    const principal = document.getElementById("contenu-principal");
+    principal.innerHTML = PageSession.enveloppe(`
+      <div class="carte-question texte-centre">
+        <span class="badge badge-orange" style="align-self:center">${icono("alerte_triangle","icone-xs")} Pas encore tout à fait</span>
+        <h2 class="mt-md">On retravaille un point précis</h2>
+        ${elementsManques.length ? `<p class="texte-2 mt-sm">Il te manquait :</p><div class="liste-elements-verifies mt-xs">${elementsManques.map(e => `<span class="element-verifie oublie">${icono("croix","icone-xs")}${Utils.echapperHtml(e)}</span>`).join("")}</div>` : `<p class="texte-2 mt-sm">Reprenons cette définition ensemble, une dernière fois.</p>`}
+        <button class="bouton bouton-primaire bouton-lg mt-lg" data-continuer>Continuer</button>
+      </div>`);
+    principal.querySelector("[data-continuer]").addEventListener("click", () => { etat.pos++; PageSession.rendreSequence(); });
+  },
+
+  genererEtRendreEtape(notion, etat, etape){
+    const opts = {};
+    if (etape.indiceLettres !== undefined) opts.indiceLettres = etape.indiceLettres;
+    if (etape.nbTrousMax) opts.nbTrousMax = true;
+    if (etape.forcerMots) opts.forcerMots = etape.forcerMots;
+    if (etape.forcerElementsOublies) opts.forcerMots = (notion.progression.elementsOublies || []).slice(0, 3);
+    if (etape.motsCles) opts.motsCles = true;
+    const exercice = Moteur.genererExercice(notion, etape.type, opts);
+    PageSession.exerciceActuel = exercice;
+    PageSession.indiceNiveau = 0;
+    PageSession.etapeActuelle = etape;
+    PageSession.rendreExercice(notion, exercice);
+  },
+
+  async resoudreSequence(notion, exercice, resultat){
+    const etat = PageSession.etatSequence[notion.id];
+    const etape = PageSession.etapeActuelle;
+    const confiance = resultat.correct === true ? "savais" : resultat.correct === "partiel" ? "hesitation" : "aucune";
+    await PageSession.enregistrerResultat(notion, exercice, resultat, confiance);
+
+    const estRestitution = etape.type === "reecriture";
+    if (estRestitution) {
+      if (resultat.correct === true) { PageSession.notionSequenceTerminee(notion, etat, true); return; }
+      // Un seul essai de remédiation ciblée avant d'accepter le résultat (§17-18) : jamais
+      // de boucle infinie sur une même notion.
+      if (!etat.remediationFaite) {
+        etat.remediationFaite = true;
+        const manques = resultat.elementsManques || [];
+        etat.sequence.splice(etat.pos, 0, { ecran: "recap-echec", elementsManques: manques }, PageSession.etapeRemediation(manques));
+        PageSession.rendreSequence();
+        return;
+      }
+      PageSession.notionSequenceTerminee(notion, etat, false);
+      return;
+    }
+
+    if (resultat.correct !== true) PageSession.stats.aRetravailler.push(notion.id);
+    // Adaptatif (§18) : une réussite franche, sans indice, permet parfois de sauter l'étape
+    // suivante — moins d'aide, plus de rappel actif — sauf juste avant un récapitulatif, et
+    // jamais après un "travail ciblé" (la restitution qui suit doit toujours être retentée).
+    const prochaine = etat.sequence[etat.pos + 1];
+    const peutSauter = resultat.correct === true && PageSession.indiceNiveau === 0 && etape.cle !== "travail_cible"
+      && prochaine && prochaine.ecran !== "recap" && prochaine.ecran !== "transition";
+    etat.pos += (peutSauter && Math.random() < 0.4) ? 2 : 1;
+    PageSession.rendreSequence();
+  },
+
+  notionSequenceTerminee(notion, etat, reussite){
+    if (reussite) {
+      PageSession.stats.notionsMaitrisees = (PageSession.stats.notionsMaitrisees || 0) + 1;
+      (PageSession.stats.notionsMaitriseesIds ||= []).push(notion.id);
+      Toast.succes(`« ${notion.titre} » ${PageSession.mode === "apprentissage" ? "apprise" : "renforcée"} !`);
+    } else {
+      PageSession.stats.aRetravailler.push(notion.id);
+    }
+    PageSession.file.splice(PageSession.index, 1);
+    delete PageSession.etatSequence[notion.id];
+    PageSession.rendreSequence();
   },
 
   rendreExercice(notion, exercice){
@@ -3222,10 +3734,13 @@ const PageSession = {
         <button type="button" class="option-reponse" data-option="false"><span class="lettre-option">F</span><span>Faux</span></button>
       </div>`;
     } else if (exercice.type === "texte_trous") {
-      let i = 0;
       const rendu = exercice.donnees.segments.map(seg => /^\d+$/.test(seg) && exercice.donnees.reponses[seg] !== undefined ? `<input type="text" class="trou-input" data-trou="${seg}" autocomplete="off">` : Utils.echapperHtml(seg)).join("");
       corpsHtml = `<div class="enonce-question">Complète le texte</div><div class="trous-texte">${rendu}</div>
         <button class="bouton bouton-primaire bouton-large mt-lg" data-valider>Valider</button>`;
+    } else if (exercice.type === "identification") {
+      corpsHtml = `<div class="enonce-question">${Utils.echapperHtml(exercice.enonce)}</div>
+        <div class="liste-options" data-options-identification>${exercice.donnees.options.map((o,i) => `<button type="button" class="option-reponse" data-identif="${i}">${Utils.echapperHtml(o)}</button>`).join("")}</div>
+        <button class="bouton bouton-primaire bouton-large mt-lg" data-valider>Valider ma sélection</button>`;
     } else if (exercice.type === "reponse_libre" || exercice.type === "reecriture") {
       corpsHtml = `<div class="enonce-question">${Utils.echapperHtml(exercice.type==="reecriture" ? notion.titre : exercice.enonce)}</div>
         ${exercice.type==="reecriture" ? `<p class="consigne-rappel">Écris la définition complète, de mémoire.</p>` : `<p class="consigne-rappel">Essaie de retrouver tout ce que tu sais, sans regarder le cours.</p>`}
@@ -3245,14 +3760,48 @@ const PageSession = {
         <button class="bouton bouton-primaire bouton-large mt-lg" data-valider>Valider cet ordre</button>`;
     }
 
+    // En séquence pédagogique, un bandeau "Étape X / N" + le "pourquoi" de cette étape
+    // précis (§24) — l'utilisateur sait toujours où il en est et pourquoi il fait cet exercice.
+    const enSequence = PageSession.estSequence();
+    const infoEtape = enSequence ? (() => {
+      const etat = PageSession.etatSequence[notion.id];
+      const etape = PageSession.etapeActuelle;
+      return `<div class="info-etape-sequence mb-md">
+        <div class="flex items-centre justify-entre texte-xs texte-2 mb-xs"><span>Étape ${etat.pos+1} / ${etat.sequence.length}</span></div>
+        ${barreProgressionHtml(Math.round((etat.pos/etat.sequence.length)*100))}
+        <p class="texte-2 texte-petit mt-xs">${Utils.echapperHtml(etape.pourquoi||"")}</p>
+      </div>`;
+    })() : "";
+
     principal.innerHTML = PageSession.enveloppe(`
       <div class="carte-question">
+        ${infoEtape}
         <div class="etiquette-notion-session">${icono(TYPES_NOTION[notion.type]?.icone||"cerveau","icone-sm")}<span class="texte-petit texte-2">${Utils.echapperHtml(notion.titre)}</span><span class="badge badge-neutre" style="margin-left:auto">${TYPES_EXERCICE[exercice.type]}</span></div>
         ${corpsHtml}
       </div>
       <div id="zoneCorrection"></div>
     `);
     PageSession.attacherExercice(notion, exercice, principal);
+    if (enSequence) PageSession.appliquerAidesEtape(notion, exercice, principal);
+  },
+
+  // Applique les aides propres à la séquence pédagogique, en post-traitement du rendu
+  // générique ci-dessus : indice de lettres pour le texte à trous (§18/consigne finale de
+  // l'utilisateur), indice auto-affiché ou bouton d'indice masqué selon l'étape.
+  appliquerAidesEtape(notion, exercice, principal){
+    const etape = PageSession.etapeActuelle;
+    if (!etape) return;
+    if (exercice.type === "texte_trous" && exercice.donnees.indiceLettres > 0) {
+      principal.querySelectorAll("[data-trou]").forEach((input, i) => {
+        const mot = exercice.donnees.reponses[i];
+        if (mot) input.value = mot.slice(0, exercice.donnees.indiceLettres);
+      });
+    }
+    if ((exercice.type === "reponse_libre" || exercice.type === "reecriture") && etape.sansIndice) {
+      principal.querySelector("[data-indice]")?.remove();
+    } else if (exercice.type === "reponse_libre" && etape.indiceAuto) {
+      principal.querySelector("[data-indice]")?.click();
+    }
   },
 
   attacherExercice(notion, exercice, principal){
@@ -3267,6 +3816,18 @@ const PageSession = {
       principal.querySelector("[data-valider]").addEventListener("click", () => {
         const valeurs = [...principal.querySelectorAll("[data-trou]")].sort((a,b) => a.dataset.trou - b.dataset.trou).map(i => i.value.trim());
         PageSession.traiterReponse(notion, exercice, valeurs);
+      });
+      return;
+    }
+    if (exercice.type === "identification") {
+      const choisis = new Set();
+      principal.querySelectorAll("[data-identif]").forEach(b => b.addEventListener("click", () => {
+        const i = Number(b.dataset.identif);
+        if (choisis.has(i)) { choisis.delete(i); b.classList.remove("selectionnee"); } else { choisis.add(i); b.classList.add("selectionnee"); }
+      }));
+      principal.querySelector("[data-valider]").addEventListener("click", () => {
+        const reponse = [...choisis].map(i => exercice.donnees.options[i]);
+        PageSession.traiterReponse(notion, exercice, reponse);
       });
       return;
     }
@@ -3334,7 +3895,7 @@ const PageSession = {
   traiterReponse(notion, exercice, reponseUtilisateur){
     const resultat = Moteur.evaluer(exercice, notion, reponseUtilisateur);
     const principal = document.getElementById("contenu-principal");
-    principal.querySelectorAll("[data-option]").forEach(b => b.disabled = true);
+    principal.querySelectorAll("[data-option], [data-identif]").forEach(b => b.disabled = true);
     document.activeElement?.blur();
     if (exercice.type === "qcm") {
       principal.querySelectorAll("[data-option]").forEach((b,i) => {
@@ -3349,6 +3910,13 @@ const PageSession = {
       });
     } else if (exercice.type === "texte_trous") {
       principal.querySelectorAll("[data-trou]").forEach((input, i) => { input.disabled = true; input.classList.add(resultat.detailTrous[i] ? "correct" : "incorrect"); if (!resultat.detailTrous[i]) input.value = exercice.donnees.reponses[i]; });
+    } else if (exercice.type === "identification") {
+      principal.querySelectorAll("[data-identif]").forEach((b,i) => {
+        const option = exercice.donnees.options[i];
+        const estBonne = exercice.donnees.bonnesReponses.includes(option);
+        if (estBonne) b.classList.add("correcte");
+        else if (b.classList.contains("selectionnee")) b.classList.add("incorrecte");
+      });
     }
     PageSession.rendreCorrection(notion, exercice, resultat);
   },
@@ -3358,7 +3926,7 @@ const PageSession = {
     const classe = resultat.correct === true ? "correct" : resultat.correct === "partiel" ? "partiel" : "incorrect";
     const titreCorrection = classe === "correct" ? "Bien joué !" : classe === "partiel" ? "Presque !" : "Pas tout à fait";
     let comparaison = "";
-    if (["reponse_libre","reecriture"].includes(exercice.type)) {
+    if (["reponse_libre","reecriture","identification"].includes(exercice.type)) {
       comparaison = `
         <div class="liste-elements-verifies">
           ${(resultat.elementsCorrects||[]).map(e => `<span class="element-verifie correct">${icono("coche","icone-xs")}${Utils.echapperHtml(e)}</span>`).join("")}
@@ -3372,6 +3940,7 @@ const PageSession = {
     }
 
     const estDrill = PageSession.estDrill();
+    const estSequence = PageSession.estSequence();
     const estConfirmation = estDrill && exercice.type === "reecriture" && PageSession.etatDrill[notion.id]?.demandeReecriture;
     let piedHtml;
     if (estConfirmation) {
@@ -3383,6 +3952,8 @@ const PageSession = {
         <button type="button" class="bouton bouton-secondaire flex-1" data-drill="continuer">${icono("cerveau","icone-sm")} Je continue à m'entraîner</button>
         <button type="button" class="bouton bouton-primaire flex-1" data-drill="connais">${icono("coche","icone-sm")} Je connais cette définition</button>
       </div>`;
+    } else if (estSequence) {
+      piedHtml = `<button type="button" class="bouton bouton-primaire bouton-large mt-md" data-suite>Continuer</button>`;
     } else {
       piedHtml = `<div class="selecteur-confiance" data-confiance>
         <button type="button" class="option-confiance" data-c="aucune">Je ne savais pas</button>
@@ -3399,6 +3970,7 @@ const PageSession = {
     </div>`;
     zone.scrollIntoView({ behavior: "smooth", block: "nearest" });
     if (estDrill) zone.querySelectorAll("[data-drill]").forEach(b => b.addEventListener("click", () => PageSession.resoudreDrill(notion, exercice, resultat, b.dataset.drill)));
+    else if (estSequence) zone.querySelector("[data-suite]").addEventListener("click", () => PageSession.resoudreSequence(notion, exercice, resultat));
     else zone.querySelectorAll("[data-c]").forEach(b => b.addEventListener("click", () => PageSession.validerConfiance(notion, exercice, resultat, b.dataset.c)));
   },
 
@@ -3428,17 +4000,10 @@ const PageSession = {
   // exercice, même notion, plus tard dans la rotation) · "maitrise" (réécriture réussie :
   // la notion sort du dossier en cours) · "recommencer" (réécriture ratée : retour à
   // l'entraînement normal, on redonne sa chance plus tard).
-  //
-  // En mode pédagogique, "plus tard dans la rotation" ne veut rien dire : on reste
-  // volontairement sur LA MÊME notion jusqu'à ce qu'elle soit maîtrisée, au lieu de faire
-  // tourner tout le lot en rond — c'est justement ce mélange permanent de notions qui
-  // donnait l'impression d'aller trop vite, en ne laissant jamais le temps de se concentrer
-  // sur une seule chose à la fois.
   async resoudreDrill(notion, exercice, resultat, action){
     const confiance = resultat.correct === true ? (action === "connais" ? "facile" : "savais") : resultat.correct === "partiel" ? "hesitation" : "aucune";
     await PageSession.enregistrerResultat(notion, exercice, resultat, confiance);
     const etat = PageSession.etatDrill[notion.id];
-    const pedagogique = PageSession.modePedagogique;
 
     if (action === "maitrise") {
       PageSession.stats.notionsMaitrisees = (PageSession.stats.notionsMaitrisees || 0) + 1;
@@ -3448,21 +4013,20 @@ const PageSession = {
       Toast.succes(`« ${notion.titre} » maîtrisée !`);
     } else if (action === "recommencer") {
       etat.demandeReecriture = false;
-      etat.recapVu = false; // on remontrera le récapitulatif avant la prochaine tentative de réécriture
       PageSession.stats.aRetravailler.push(notion.id);
-      if (!pedagogique) PageSession.index = PageSession.file.length ? (PageSession.index + 1) % PageSession.file.length : 0;
+      PageSession.index = PageSession.file.length ? (PageSession.index + 1) % PageSession.file.length : 0;
     } else if (action === "connais") {
       etat.demandeReecriture = true; // reteste la même notion tout de suite, avec une réécriture cette fois
     } else {
       if (resultat.correct !== true) PageSession.stats.aRetravailler.push(notion.id);
-      if (!pedagogique) PageSession.index = PageSession.file.length ? (PageSession.index + 1) % PageSession.file.length : 0;
+      PageSession.index = PageSession.file.length ? (PageSession.index + 1) % PageSession.file.length : 0;
     }
     PageSession.rendre();
   },
 
   async terminer(){
     const duree = Math.round((Date.now() - PageSession.stats.debut) / 1000);
-    const estDrill = PageSession.estDrill();
+    const estDrill = PageSession.estDrill() || PageSession.estSequence();
     const notionsRevues = estDrill ? PageSession.totalDrill : PageSession.file.length;
     await Store.ajouter("sessions", { type: PageSession.mode, notionsRevues, reussites: PageSession.stats.reussites, echecs: PageSession.stats.echecs, dureeSecondes: duree });
     await Gamification.surSessionTerminee();
@@ -3651,6 +4215,213 @@ const PageExamen = {
   },
 };
 
+/* ==================== G8b. ÉVALUATIONS ==================== */
+// Une Évaluation répond à une question précise, différente d'une session d'apprentissage :
+// "est-ce que je suis réellement capable de réécrire ces définitions de mémoire ?" (§7).
+// Aucune aide pendant l'évaluation (§8) ; correction et bilan seulement à la fin (§9-14),
+// via Moteur.analyserRestitution (D2/D3, juste après evaluerReponseLibre).
+const NIVEAUX_RESTITUTION = {
+  excellente:  { emoji: "🟢", libelle: "correcte" },
+  tresBonne:   { emoji: "🟢", libelle: "correcte" },
+  partielle:   { emoji: "🟡", libelle: "partiellement correcte" },
+  fragile:     { emoji: "🔴", libelle: "à revoir" },
+  nonMaitrisee:{ emoji: "🔴", libelle: "à revoir" },
+  incorrecte:  { emoji: "🔴", libelle: "à revoir (contradiction)" },
+};
+
+const PageEvaluationCreation = {
+  selectionLibre: new Set(),
+  recherche: "",
+
+  rendre(){
+    const principal = document.getElementById("contenu-principal");
+    const preselection = Etat.ui.selectionEvaluation;
+    if (preselection?.length) {
+      const notions = preselection.map(id => Selecteurs.notion(id)).filter(Boolean);
+      principal.innerHTML = `
+        <a href="#/definitions" class="texte-2 texte-petit flex items-centre gap-xs mb-md">${icono("fleche_gauche","icone-xs")} Définitions</a>
+        <h1 class="mb-sm">Créer l'évaluation</h1>
+        <p class="texte-2 mb-lg">${notions.length} définition${notions.length>1?"s":""} sélectionnée${notions.length>1?"s":""}. Tu vas devoir réécrire chacune de mémoire, sans aide.</p>
+        <div class="flex-col gap-sm mb-lg">${notions.map(n => `<div class="carte flex items-centre gap-sm"><span class="flex-1 texte-petit">${Utils.echapperHtml(n.titre)}</span><button type="button" class="bouton-icone" data-retirer="${n.id}" aria-label="Retirer">${icono("croix","icone-xs")}</button></div>`).join("")}</div>
+        <button class="bouton bouton-primaire bouton-large bouton-lg" data-creer>${icono("crayon","icone-sm")} Créer l'évaluation</button>
+      `;
+      principal.querySelectorAll("[data-retirer]").forEach(b => b.addEventListener("click", () => {
+        Etat.ui.selectionEvaluation = Etat.ui.selectionEvaluation.filter(id => id !== b.dataset.retirer);
+        PageEvaluationCreation.rendre();
+      }));
+      principal.querySelector("[data-creer]").addEventListener("click", () => {
+        if (!Etat.ui.selectionEvaluation.length) return Toast.erreur("Sélectionne au moins une définition.");
+        const ids = [...Etat.ui.selectionEvaluation];
+        Etat.ui.selectionEvaluation = null;
+        PageDefinitions.selection.clear();
+        PageEvaluation.demarrer(ids);
+      });
+      return;
+    }
+
+    // Arrivée directe depuis l'onglet Évaluations (pas de sélection préparée dans
+    // Définitions) : on propose le même choix, en plus simple, sur place.
+    const r = Utils.normaliserTexte(PageEvaluationCreation.recherche);
+    const toutes = Selecteurs.toutesNotionsValidees().filter(n => !r || Utils.normaliserTexte(n.titre).includes(r));
+    principal.innerHTML = `
+      <a href="#/evaluations" class="texte-2 texte-petit flex items-centre gap-xs mb-md">${icono("fleche_gauche","icone-xs")} Évaluations</a>
+      <h1 class="mb-sm">Créer une évaluation</h1>
+      <p class="texte-2 mb-lg">Choisis les définitions que tu veux réellement tester.</p>
+      <div class="recherche-entete mb-md">${icono("recherche","icone-sm")}<input type="search" placeholder="Rechercher..." value="${Utils.echapperHtml(PageEvaluationCreation.recherche)}" data-recherche-eval></div>
+      <div class="flex gap-sm mb-md">
+        <button class="bouton bouton-contour bouton-sm" data-tout>Tout sélectionner</button>
+        <button class="bouton bouton-contour bouton-sm" data-aucun>Désélectionner</button>
+      </div>
+      ${toutes.length ? `<div class="flex-col gap-sm mb-lg">${toutes.map(n => `
+        <label class="carte flex items-centre gap-sm" style="cursor:pointer">
+          <input type="checkbox" data-case="${n.id}" ${PageEvaluationCreation.selectionLibre.has(n.id)?"checked":""} style="width:20px;height:20px;accent-color:var(--primaire);cursor:pointer;flex-shrink:0">
+          <span class="flex-1 texte-petit">${Utils.echapperHtml(n.titre)}</span>${badgeStatut(n.progression.statut)}
+        </label>`).join("")}</div>` : carteVide("cerveau", "Aucune définition disponible", "Ajoute d'abord un cours ou des cartes rapides.")}
+      <button class="bouton bouton-primaire bouton-large bouton-lg" data-creer-libre>${icono("crayon","icone-sm")} Créer l'évaluation (${PageEvaluationCreation.selectionLibre.size})</button>
+    `;
+    principal.querySelector("[data-recherche-eval]").addEventListener("input", Utils.debounce((e) => { PageEvaluationCreation.recherche = e.target.value; PageEvaluationCreation.rendre(); }, 250));
+    principal.querySelector("[data-tout]").addEventListener("click", () => { toutes.forEach(n => PageEvaluationCreation.selectionLibre.add(n.id)); PageEvaluationCreation.rendre(); });
+    principal.querySelector("[data-aucun]").addEventListener("click", () => { PageEvaluationCreation.selectionLibre.clear(); PageEvaluationCreation.rendre(); });
+    principal.querySelectorAll("[data-case]").forEach(c => c.addEventListener("change", () => {
+      if (c.checked) PageEvaluationCreation.selectionLibre.add(c.dataset.case); else PageEvaluationCreation.selectionLibre.delete(c.dataset.case);
+      PageEvaluationCreation.rendre();
+    }));
+    principal.querySelector("[data-creer-libre]").addEventListener("click", () => {
+      if (!PageEvaluationCreation.selectionLibre.size) return Toast.erreur("Sélectionne au moins une définition.");
+      const ids = [...PageEvaluationCreation.selectionLibre];
+      PageEvaluationCreation.selectionLibre = new Set();
+      PageEvaluation.demarrer(ids);
+    });
+  },
+};
+
+const PageEvaluation = {
+  file: [], index: 0, reponses: [], debut: 0,
+
+  demarrer(notionIds){
+    PageEvaluation.file = notionIds;
+    PageEvaluation.index = 0;
+    PageEvaluation.reponses = [];
+    PageEvaluation.debut = Date.now();
+    Routeur.aller("evaluations/actif");
+  },
+
+  rendre(){
+    const principal = document.getElementById("contenu-principal");
+    if (PageEvaluation.index >= PageEvaluation.file.length) { PageEvaluation.terminer(); return; }
+    const notion = Selecteurs.notion(PageEvaluation.file[PageEvaluation.index]);
+    if (!notion) { PageEvaluation.index++; PageEvaluation.rendre(); return; }
+    const pct = Math.round((PageEvaluation.index / PageEvaluation.file.length) * 100);
+    principal.innerHTML = `
+      <div class="enveloppe-session">
+        <div class="entete-session">
+          <button class="bouton-icone" data-action="aller" data-route="evaluations" aria-label="Abandonner">${icono("croix")}</button>
+          ${barreProgressionHtml(pct)}
+          <span class="texte-petit texte-2">${PageEvaluation.index+1}/${PageEvaluation.file.length}</span>
+        </div>
+        <div class="carte-question texte-centre">
+          <span class="badge badge-neutre" style="align-self:center">Restitution complète</span>
+          <h2 class="mt-md">${Utils.echapperHtml(notion.titre)}</h2>
+          <p class="texte-2 mt-sm">Écris la définition complète de ce terme, de mémoire. Aucune aide, aucune correction avant la fin.</p>
+          <textarea class="champ mt-md" style="min-height:160px;text-align:left" data-reponse-eval placeholder="Écris ta réponse ici..."></textarea>
+          <button class="bouton bouton-primaire bouton-large bouton-lg mt-md" data-suivant>${PageEvaluation.index+1 < PageEvaluation.file.length ? "Suivant" : "Terminer l'évaluation"}</button>
+        </div>
+      </div>`;
+    principal.querySelector("[data-suivant]").addEventListener("click", () => {
+      const texte = principal.querySelector("[data-reponse-eval]").value.trim();
+      PageEvaluation.reponses.push({ notionId: notion.id, reponse: texte });
+      PageEvaluation.index++;
+      PageEvaluation.rendre();
+    });
+  },
+
+  async terminer(){
+    const dureeSecondes = Math.round((Date.now() - PageEvaluation.debut) / 1000);
+    const details = [];
+    for (const r of PageEvaluation.reponses) {
+      const notion = Selecteurs.notion(r.notionId);
+      if (!notion) continue;
+      const analyse = Moteur.analyserRestitution(notion, r.reponse);
+      details.push({ notionId: notion.id, titre: notion.titre, reponseDonnee: r.reponse, ...analyse });
+      // Une restitution complète sans aide pèse lourd dans la progression (§13) : la
+      // confiance dérive du ratio d'éléments réellement rappelés, pas d'un simple oui/non.
+      const confiance = analyse.ratio >= 0.9 ? "facile" : analyse.ratio >= 0.7 ? "savais" : analyse.ratio >= 0.4 ? "hesitation" : "aucune";
+      const nouvelleProgression = Revision.calculerRevisionSuivante(notion, {
+        correct: analyse.correct, typeExercice: "reecriture", indiceUtilise: 0, confiance,
+        elementsManques: analyse.elementsManques, elementsCorrects: analyse.elementsCorrects,
+      });
+      await Store.modifier("notions", notion.id, { progression: nouvelleProgression });
+      await Store.ajouter("historique", { notionId: notion.id, date: new Date().toISOString(), typeExercice: "reecriture", resultat: analyse.correct, elementsManques: analyse.elementsManques, indiceUtilise: 0, confiance });
+    }
+    const reussites = details.filter(d => d.correct === true).length;
+    const aRevoir = details.filter(d => d.niveau === "fragile" || d.niveau === "nonMaitrisee" || d.niveau === "incorrecte").length;
+    const fragiles = details.length - reussites - aRevoir; // niveau "partielle" (🟡)
+    const scorePct = details.length ? Math.round(details.reduce((s,d) => s+d.ratio, 0) / details.length * 100) : 0;
+    const doc = await Store.ajouter("evaluations", {
+      notionsIds: details.map(d => d.notionId), total: details.length, score: scorePct,
+      reussites, fragiles, aRevoir, dureeSecondes, details,
+    });
+    Routeur.aller(`evaluations/resultats/${doc.id}`);
+  },
+};
+
+const PageEvaluationResultats = {
+  rendre({ id }){
+    const principal = document.getElementById("contenu-principal");
+    const evaluation = Etat.donnees.evaluations.find(e => e.id === id);
+    if (!evaluation) { Routeur.aller("evaluations"); return; }
+    const reussites = evaluation.details.filter(d => d.correct === true).length;
+    principal.innerHTML = `
+      <a href="#/evaluations" class="texte-2 texte-petit flex items-centre gap-xs mb-md">${icono("fleche_gauche","icone-xs")} Évaluations</a>
+      <h1 class="mb-sm">Évaluation terminée</h1>
+      <p class="texte-2 mb-lg">${reussites} / ${evaluation.total} définitions correctement restituées · ${Utils.formaterDuree(evaluation.dureeSecondes)}</p>
+      <div class="flex-col gap-sm">
+        ${evaluation.details.map(d => {
+          const niv = NIVEAUX_RESTITUTION[d.niveau] || NIVEAUX_RESTITUTION.fragile;
+          return `<div class="carte">
+            <div class="flex items-centre gap-sm mb-sm"><span>${niv.emoji}</span><span class="texte-semi flex-1">${Utils.echapperHtml(d.titre)}</span><span class="texte-2 texte-petit">${niv.libelle}</span></div>
+            <p class="texte-2 texte-petit mb-sm" style="white-space:pre-wrap">${Utils.echapperHtml(d.reponseDonnee || "(pas de réponse)")}</p>
+            <div class="liste-elements-verifies">
+              ${d.elementsCorrects.map(e => `<span class="element-verifie correct">${icono("coche","icone-xs")}${Utils.echapperHtml(e)}</span>`).join("")}
+              ${d.elementsManques.map(e => `<span class="element-verifie oublie">${icono("croix","icone-xs")}${Utils.echapperHtml(e)}</span>`).join("")}
+              ${d.elementsContredits.map(e => `<span class="element-verifie oublie" style="background:var(--danger-clair);color:var(--danger)">${icono("alerte_triangle","icone-xs")}${Utils.echapperHtml(e)} (contredit)</span>`).join("")}
+            </div>
+          </div>`;
+        }).join("")}
+      </div>
+      <div class="flex gap-sm mt-lg">
+        <button class="bouton bouton-secondaire flex-1" data-refaire>${icono("cible","icone-sm")} Refaire cette évaluation</button>
+        <button class="bouton bouton-primaire flex-1" data-action="aller" data-route="evaluations">Terminé</button>
+      </div>
+    `;
+    principal.querySelector("[data-refaire]").addEventListener("click", () => {
+      const ids = evaluation.notionsIds.filter(nid => Selecteurs.notion(nid));
+      if (!ids.length) return Toast.erreur("Ces définitions n'existent plus.");
+      PageEvaluation.demarrer(ids);
+    });
+  },
+};
+
+const PageEvaluationHistorique = {
+  rendre(){
+    const principal = document.getElementById("contenu-principal");
+    const evaluations = Selecteurs.evaluations();
+    principal.innerHTML = `
+      <p class="texte-2 mb-lg">Vérifie ce que tu es réellement capable de restituer de mémoire, sans aide — pas seulement ce que tu reconnais.</p>
+      <button class="bouton bouton-primaire bouton-large bouton-lg mb-lg" data-action="aller" data-route="evaluations/nouvelle">${icono("crayon","icone-sm")} Créer une évaluation</button>
+      <h2 class="mb-sm">Historique</h2>
+      ${evaluations.length ? `<div class="flex-col gap-sm">${evaluations.map(e => `
+        <a href="#/evaluations/resultats/${e.id}" class="carte carte-cliquable flex items-centre gap-sm">
+          <div class="flex-1">
+            <div class="texte-semi">${e.reussites} / ${e.total} correctes</div>
+            <div class="texte-2 texte-petit">${Utils.formaterDateCourte(e.dateCreation)} · ${Utils.formaterDuree(e.dureeSecondes)}</div>
+          </div>
+          <span class="texte-semi" style="color:${e.score>=80?"var(--succes)":e.score>=50?"var(--attention)":"var(--danger)"}">${e.score}%</span>
+        </a>`).join("")}</div>` : carteVide("cible", "Aucune évaluation pour l'instant", "Sélectionne des définitions dans l'onglet Définitions, ou crée une évaluation directement ici.")}
+    `;
+  },
+};
+
 /* ==================== G9. CALENDRIER ==================== */
 const PageCalendrier = {
   moisAffiche: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
@@ -3749,7 +4520,7 @@ const PageReviser = {
       <h2 class="mb-sm">Autres modes</h2>
       <div class="flex-col gap-sm">
         <button class="carte carte-cliquable flex items-centre gap-sm" data-mode="apprendre">${icono("livre_ouvert")}<div class="flex-1"><div class="texte-semi">Découvrir de nouvelles notions</div><div class="texte-2 texte-petit">Notions jamais encore travaillées</div></div>${icono("chevron_droit","icone-sm")}</button>
-        <a href="#/reviser/erreurs" class="carte carte-cliquable flex items-centre gap-sm">${icono("alerte_triangle")}<div class="flex-1"><div class="texte-semi">Mes erreurs</div><div class="texte-2 texte-petit">${fragiles.length} notion${fragiles.length>1?"s":""} fragile${fragiles.length>1?"s":""}</div></div>${icono("chevron_droit","icone-sm")}</a>
+        <a href="#/erreurs" class="carte carte-cliquable flex items-centre gap-sm">${icono("alerte_triangle")}<div class="flex-1"><div class="texte-semi">Mes erreurs</div><div class="texte-2 texte-petit">${fragiles.length} notion${fragiles.length>1?"s":""} fragile${fragiles.length>1?"s":""}</div></div>${icono("chevron_droit","icone-sm")}</a>
         <a href="#/examen" class="carte carte-cliquable flex items-centre gap-sm">${icono("horloge")}<div class="flex-1"><div class="texte-semi">Mode examen</div><div class="texte-2 texte-petit">Sans indice, sans correction immédiate</div></div>${icono("chevron_droit","icone-sm")}</a>
         <a href="#/calendrier" class="carte carte-cliquable flex items-centre gap-sm">${icono("calendrier")}<div class="flex-1"><div class="texte-semi">Calendrier des révisions</div></div>${icono("chevron_droit","icone-sm")}</a>
       </div>
@@ -4107,13 +4878,20 @@ document.addEventListener("keydown", (e) => {
 function enregistrerRoutes(){
   Routeur.definir("dashboard", PageDashboard.rendre);
   Routeur.definir("cartes/nouveau", PageCartesRapides.rendre);
+  Routeur.definir("cartes/:id", PageCoursDetail.rendre);
+  Routeur.definir("cartes", PageCartesFacile.rendre);
+  Routeur.definir("definitions", PageDefinitions.rendre);
+  Routeur.definir("evaluations/nouvelle", PageEvaluationCreation.rendre);
+  Routeur.definir("evaluations/actif", PageEvaluation.rendre);
+  Routeur.definir("evaluations/resultats/:id", PageEvaluationResultats.rendre);
+  Routeur.definir("evaluations", PageEvaluationHistorique.rendre);
   Routeur.definir("cours/nouveau", PageCoursForm.rendre);
   Routeur.definir("cours/:id/editer", PageCoursForm.rendre);
   Routeur.definir("cours/:id/valider", PageValidation.rendre);
   Routeur.definir("cours", PageCours.rendre);
   Routeur.definir("cours/:id", PageCoursDetail.rendre);
   Routeur.definir("notion/:id", PageNotion.rendre);
-  Routeur.definir("reviser/erreurs", PageReviser.rendreErreurs);
+  Routeur.definir("erreurs", PageReviser.rendreErreurs);
   Routeur.definir("reviser", PageReviser.rendre);
   Routeur.definir("session/actif", PageSession.rendre);
   Routeur.definir("session/resume", PageResume.rendre);

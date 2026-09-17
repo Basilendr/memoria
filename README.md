@@ -1,6 +1,6 @@
-# Memoria
+# CartesFacile
 
-Application web d'apprentissage par cœur : tu donnes un cours, Memoria détecte les notions
+Application web d'apprentissage par cœur : tu donnes un cours, CartesFacile détecte les notions
 importantes, te fait travailler avec plusieurs types d'exercices, détecte précisément ce que tu
 oublies, et programme tes prochaines révisions avec un algorithme de répétition espacée.
 

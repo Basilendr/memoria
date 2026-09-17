@@ -65,7 +65,7 @@ service cloud.firestore {
     function coursValide(d) {
       return texteFacultatif(d, 'titre', 300) && texteFacultatif(d, 'matiereId', 200)
         && texteFacultatif(d, 'contenu', 300000) && boolFacultatif(d, 'favori') && boolFacultatif(d, 'archive')
-        && texteFacultatif(d, 'interrogationValideeLe', 50);
+        && texteFacultatif(d, 'interrogationValideeLe', 50) && texteOuNulFacultatif(d, 'origine', 50);
     }
     function chapitreValide(d) {
       return texteFacultatif(d, 'coursId', 200) && texteFacultatif(d, 'titre', 300)
@@ -90,6 +90,15 @@ service cloud.firestore {
     }
     function examenValide(d) {
       return nombreFacultatif(d, 'score') && nombreFacultatif(d, 'total') && texteOuNulFacultatif(d, 'matiereId', 200);
+    }
+    // Le détail par définition (details) est une liste de maps (réponse donnée, éléments
+    // corrects/manqués/contredits, niveau...) : comme pour historique.elementsManques,
+    // seul le TYPE de la liste est validé ici, pas chaque champ imbriqué — cohérent avec
+    // le reste de ces règles (une fusion partielle ne doit jamais être bloquée à tort).
+    function evaluationValide(d) {
+      return listeFacultative(d, 'notionsIds') && nombreFacultatif(d, 'total') && nombreFacultatif(d, 'score')
+        && nombreFacultatif(d, 'reussites') && nombreFacultatif(d, 'fragiles') && nombreFacultatif(d, 'aRevoir')
+        && nombreFacultatif(d, 'dureeSecondes') && listeFacultative(d, 'details');
     }
     function controleValide(d) {
       return texteFacultatif(d, 'nom', 200) && texteFacultatif(d, 'date', 50);
@@ -137,6 +146,11 @@ service cloud.firestore {
       match /examens/{docId} {
         allow read: if estProprietaire(uid);
         allow create, update: if estProprietaire(uid) && idCoherent(docId, request.resource.data) && examenValide(request.resource.data);
+        allow delete: if estProprietaire(uid);
+      }
+      match /evaluations/{docId} {
+        allow read: if estProprietaire(uid);
+        allow create, update: if estProprietaire(uid) && idCoherent(docId, request.resource.data) && evaluationValide(request.resource.data);
         allow delete: if estProprietaire(uid);
       }
       match /controles/{docId} {

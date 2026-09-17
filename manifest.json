@@ -1,6 +1,6 @@
 {
-  "name": "Memoria — Apprendre pour de vrai",
-  "short_name": "Memoria",
+  "name": "CartesFacile — Apprendre pour de vrai",
+  "short_name": "CartesFacile",
   "description": "Transforme tes cours en un programme de révision personnalisé, basé sur le rappel actif et la répétition espacée.",
   "start_url": "/",
   "display": "standalone",

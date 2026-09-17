@@ -1,9 +1,10 @@
-# Memoria
+# CartesFacile
 
-Application web d'apprentissage par cœur : l'utilisateur donne un cours, l'app détecte les
-notions importantes, génère des exercices variés, détecte précisément ce qui est oublié, et
-programme les prochaines révisions par répétition espacée. Voir [README.md](README.md) pour
-l'installation, la configuration Firebase et le détail du moteur d'apprentissage.
+Application web d'apprentissage par cœur (renommée depuis « Memoria » — voir § Organisation) :
+l'utilisateur donne un cours, l'app détecte les notions importantes, génère des exercices variés,
+détecte précisément ce qui est oublié, et programme les prochaines révisions par répétition
+espacée. Voir [README.md](README.md) pour l'installation, la configuration Firebase et le détail
+du moteur d'apprentissage.
 
 Site statique en **un seul fichier** (`index.html`) — HTML/CSS/JS pur, aucune dépendance, aucun
 build. Choix imposé par l'environnement : cette machine n'a **pas Node.js/npm** installé (ni
@@ -58,13 +59,58 @@ comme celle qui avait forcé ce choix dans `vieenfamille`.
 type de constructeur de formulaire générique que dans `vieenfamille`, avec les types de champ :
 `texte`, `zone`, `select`, `nombre`, `date`, `coche`, `couleur`.
 
+## Organisation (mise à jour majeure — réorganisation + évaluations + séquences pédagogiques)
+
+Neuf destinations bien séparées (`NAV_ITEMS`, section F) plutôt qu'un mélange de fonctionnalités
+dans les mêmes écrans : Accueil, Mes cours, **Définitions**, **CartesFacile**, Révisions, Mes
+erreurs, **Évaluations**, Calendrier, Statistiques. Le mobile n'affiche que les 4 plus utilisées
+au quotidien en barre basse (`mobilePrincipal: true`) — les autres vivent dans la feuille "Plus"
+(`Coquille.ouvrirMenuPlus`). Le bureau, qui a la place, les affiche toutes dans la barre latérale.
+« Profil » n'a plus sa propre entrée : déjà accessible depuis l'avatar de l'en-tête.
+
+- **Définitions** (`PageDefinitions`, section G5b) — vue d'ensemble de toutes les notions
+  (recherche, filtres matière/cours/chapitre/niveau, sélection multiple) dont l'objectif est
+  d'apprendre **précisément** une définition et de vérifier qu'on peut la restituer entièrement.
+  Distincte de **CartesFacile** (`PageCartesFacile`, section G2c), pensée pour un usage plus
+  simple et rapide — les deux lisent les mêmes notions Firestore (`Selecteurs.paquetsCartesFacile`
+  : un « paquet » est un `cours` avec `origine: "rapide"`, tagué à la création depuis Cartes
+  rapides), mais n'affichent jamais les mêmes actions.
+- **Évaluations** (`PageEvaluationCreation/PageEvaluation/PageEvaluationResultats/
+  PageEvaluationHistorique`, section G8b) — sélectionner des définitions depuis Définitions (ou
+  directement dans l'onglet) puis les réécrire entièrement de mémoire, **sans aucune aide** (pas
+  de QCM, pas d'indice, pas de correction avant la fin) : répond à "suis-je réellement capable de
+  restituer ça ?", pas à "est-ce que je la reconnais ?". La correction reste heuristique (mots-clés
+  + éléments essentiels, comme partout ailleurs dans ce projet — voir § API IA du README) :
+  `Moteur.analyserRestitution` distingue élément **correct** / **oublié** / **contredit** (une
+  négation détectée juste avant le mot-clé dans la réponse — `Moteur.NEGATIONS`), avec des seuils
+  adaptés au nombre d'éléments plutôt qu'un pourcentage brut. Persisté dans la nouvelle collection
+  `evaluations`.
+- **Séquences pédagogiques** (`SEQUENCE_APPRENTISSAGE`/`SEQUENCE_REVISION`, section D6 +
+  `PageSession.rendreSequence`/`construireSequence`/`resoudreSequence`, section G6b) : une nouvelle
+  notion se travaille en ~15 étapes progressives (mode `"apprentissage"`), une notion déjà vue et
+  due en ~10 (mode `"reviser"`) — jamais comme des questions indépendantes. Chaque modèle d'étape
+  peut être sauté via `applicable(notion)` si non pertinent (pas de "reconstruction" sans ≥3
+  éléments, pas d'"association" seul dans son cours — §27 du cahier des charges : la qualité prime
+  sur le nombre exact d'étapes). Adaptatif : une réussite franche sans indice peut sauter l'étape
+  suivante ; un échec à la restitution finale insère une étape "travail ciblé" (texte à trous forçant
+  spécifiquement les éléments manqués) puis retente la restitution une seule fois avant d'accepter
+  le résultat (`etapeRemediation`, jamais de boucle infinie). Le texte à trous accepte un indice de
+  lettres progressif (`indiceLettres`) — élevé en tout début d'apprentissage, nul plus tard ou en
+  révision. Nouveau type d'exercice `"identification"` (sélection multiple d'éléments parmi des
+  leurres) pour l'étape "Identification des éléments". **Ce moteur est entièrement distinct** du
+  moteur "drill" existant (`estDrill()`/`rendreDrill()`, modes `"apprendre"`/`"interrogation"`,
+  **strictement inchangé**) : le choix entre les deux se fait via `PageSession.demarrerApprendre()`
+  ("Réviser rapidement" = ancien drill · "Apprendre en profondeur" = nouvelle séquence 15 étapes).
+
 ## Modèle de données Firestore
 
-Isolé par utilisateur, sous-collections de `users/{uid}` : `matieres`, `cours`, `chapitres`,
-`notions`, `historique`, `sessions`, `examens`, `controles`, `notifications`. Détail complet des
-champs dans le README. Point notable : **les exercices ne sont jamais persistés**, régénérés à
-la volée par `Moteur.genererExercice` à partir des champs de la notion — seules la notion (avec
-sa progression repliée dans un champ `progression`), l'historique et les sessions le sont.
+Isolé par utilisateur, sous-collections de `users/{uid}` : `matieres`, `cours` (+ `origine:
+"rapide"` optionnel pour un paquet CartesFacile), `chapitres`, `notions`, `historique`, `sessions`,
+`examens`, `evaluations` (nouveau — voir § Organisation), `controles`, `notifications`. Détail
+complet des champs dans le README. Point notable : **les exercices ne sont jamais persistés**,
+régénérés à la volée par `Moteur.genererExercice` à partir des champs de la notion — seules la
+notion (avec sa progression repliée dans un champ `progression`), l'historique et les sessions le
+sont.
 
 ## Moteur d'apprentissage — décisions clés
 
@@ -95,18 +141,9 @@ sa progression repliée dans un champ `progression`), l'historique et les sessio
   tableau `reponses` (celui qu'on vient de `push`), **pas** la position dans le tableau `cibles`
   de départ — si un mot-cible ne matche pas dans le texte (accent, forme différente), les deux
   indices divergent et un trou affiche littéralement son numéro au lieu d'un champ de saisie.
-- **Mode "apprentissage" (apprendre en profondeur)** : à chaque point d'entrée qui lançait
-  directement `PageSession.demarrer("apprendre", …)` (Cartes rapides, page d'un cours, "Découvrir
-  de nouvelles notions"), on demande maintenant via `PageSession.demarrerApprendre(opts)` si
-  l'utilisateur veut réviser rapidement (mode `"apprendre"`, **strictement inchangé**) ou apprendre
-  en profondeur (nouveau mode `"apprentissage"`). Les deux partagent le même moteur "drill"
-  (`estDrill()`), mais `PageSession.modePedagogique` active trois différences ciblées : l'ordre des
-  types d'exercice n'est jamais mélangé (`choisirTypeDrill`, du plus facile — QCM — au plus dur —
-  réponse libre), on reste sur la même notion tant qu'elle n'est pas maîtrisée au lieu de faire
-  tourner tout le lot (`resoudreDrill`), et deux écrans de pause s'ajoutent (`rendreTransition`
-  avant le premier exercice, `rendreRecapFinal` avant la réécriture de confirmation) — c'est
-  directement la réponse à un retour utilisateur : le mode "apprendre" habituel donnait l'impression
-  d'aller trop vite et d'être trop dur pour une vraie première découverte.
+- **Mode "apprendre en profondeur" / "réviser"** : voir § Organisation ci-dessus
+  (`SEQUENCE_APPRENTISSAGE`/`SEQUENCE_REVISION`, section D6) — remplace une première version plus
+  simple (transition + récap unique) par une vraie séquence de 15/10 étapes adaptative.
 
 ## Pièges rencontrés
 
@@ -138,10 +175,13 @@ sa progression repliée dans un champ `progression`), l'historique et les sessio
   classique qui a rendu deux des trois boutons de la dernière étape de l'onboarding inertes
   silencieusement (aucune erreur console, juste aucun écouteur posé).
 
-## Configuration Firebase à faire (aucun projet créé à ce jour)
+## Configuration Firebase
 
-Voir README § « Passer en production avec Firebase » pour la procédure complète. Rien n'est
-urgent : le mode démo local fonctionne dès maintenant sans aucune configuration.
+Projet réel déjà créé et connecté (`memoria-9d188`, `FIREBASE_CONFIG` section A) — ce n'est plus
+le mode démo local qui sert de référence pour les tests utilisateur. **À republier après cette
+mise à jour** : `firestore.rules` a gagné un validateur `evaluationValide` + collection
+`evaluations`, et `coursValide` accepte désormais le champ `origine`. Voir README § « Passer en
+production avec Firebase » pour la procédure de publication des règles.
 
 ## Direction visuelle
 
