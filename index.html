@@ -1238,6 +1238,18 @@ const Store = {
     await Store.supprimer("notions", notionId);
   },
 
+  // Duplique une définition seule (contrairement à dupliquerCoursAvecNotions, qui duplique
+  // tout un paquet) — avec une progression neuve : une copie n'hérite jamais de l'historique
+  // ni de la maîtrise de l'originale, même topo que pour un paquet dupliqué.
+  async dupliquerNotion(notion){
+    return Store.ajouter("notions", {
+      titre: `${notion.titre} (copie)`, type: notion.type, question: notion.question, reponse: notion.reponse,
+      elements: notion.elements, importance: notion.importance, difficulte: notion.difficulte,
+      coursId: notion.coursId, matiereId: notion.matiereId, chapitreId: notion.chapitreId,
+      statutValidation: "gardee", progression: Revision.progressionInitiale(), favori: false,
+    });
+  },
+
   // Duplication complète d'un paquet CartesFacile : contrairement à "dupliquer" un cours
   // normal (qui ne recopie que le texte brut, à ré-analyser), un paquet de cartes n'a pas
   // de texte source à ré-analyser — il faut recopier directement chapitres et notions,
@@ -2605,8 +2617,20 @@ function ouvrirGestionMatieres(){
   attacherActions();
 }
 
+const TRIS_COURS = {
+  recent: { libelle: "Plus récent", fn: (a,b) => new Date(b.dateCreation) - new Date(a.dateCreation) },
+  ancien: { libelle: "Plus ancien", fn: (a,b) => new Date(a.dateCreation) - new Date(b.dateCreation) },
+  az: { libelle: "A → Z", fn: (a,b) => a.titre.localeCompare(b.titre, "fr") },
+  za: { libelle: "Z → A", fn: (a,b) => b.titre.localeCompare(a.titre, "fr") },
+  progression: { libelle: "Meilleure progression", fn: (a,b) => PageCours.moyenne(b) - PageCours.moyenne(a) },
+  progressionFaible: { libelle: "Progression la plus faible", fn: (a,b) => PageCours.moyenne(a) - PageCours.moyenne(b) },
+};
 const PageCours = {
-  filtres: { matiere: "", recherche: "", favoris: false },
+  filtres: { matiere: "", recherche: "", favoris: false, tri: "recent" },
+  moyenne(c){
+    const notions = Selecteurs.notionsValideesDeCours(c.id);
+    return notions.length ? Math.round(notions.reduce((s,n) => s+n.progression.maitriseActuelle,0)/notions.length) : -1;
+  },
   rendre(params = {}){
     if (params.matiere !== undefined) PageCours.filtres.matiere = params.matiere;
     Etat.ui.parametresPage = params;
@@ -2621,12 +2645,15 @@ const PageCours = {
       const r = Utils.normaliserTexte(PageCours.filtres.recherche);
       cours = cours.filter(c => Utils.normaliserTexte(c.titre).includes(r));
     }
-    cours = [...cours].sort((a,b) => (b.favori - a.favori) || new Date(b.dateCreation) - new Date(a.dateCreation));
+    // Les favoris remontent toujours en premier, quel que soit le tri choisi — cohérent avec
+    // le comportement d'avant (seul le tri secondaire changeait déjà par défaut).
+    cours = [...cours].sort((a,b) => (b.favori - a.favori) || TRIS_COURS[PageCours.filtres.tri].fn(a,b));
 
     principal.innerHTML = `
       <div class="flex items-centre justify-entre flex-wrap gap-sm mb-md">
         <div class="recherche-entete">${icono("recherche","icone-sm")}<input type="search" placeholder="Rechercher un cours..." value="${Utils.echapperHtml(PageCours.filtres.recherche)}" data-recherche-cours></div>
         <div class="flex gap-sm flex-wrap">
+          <select class="champ" style="width:auto" data-tri-cours>${Object.entries(TRIS_COURS).map(([cle,t]) => `<option value="${cle}" ${PageCours.filtres.tri===cle?"selected":""}>${t.libelle}</option>`).join("")}</select>
           <button class="bouton bouton-contour" data-gerer-matieres>${icono("engrenage","icone-sm")} Matières</button>
           <button class="bouton bouton-primaire" data-action="aller" data-route="cours/nouveau">${icono("plus","icone-sm")} Nouveau cours</button>
         </div>
@@ -2661,6 +2688,7 @@ const PageCours = {
   },
   attacher(principal){
     principal.querySelector("[data-recherche-cours]").addEventListener("input", Utils.debounce((e) => { PageCours.filtres.recherche = e.target.value; PageCours.rendre(); }, 250));
+    principal.querySelector("[data-tri-cours]").addEventListener("change", (e) => { PageCours.filtres.tri = e.target.value; PageCours.rendre(); });
     principal.querySelectorAll("[data-filtre-matiere]").forEach(b => b.addEventListener("click", () => { PageCours.filtres.matiere = b.dataset.filtreMatiere; PageCours.filtres.favoris = false; PageCours.rendre(); }));
     principal.querySelector("[data-filtre-favoris]").addEventListener("click", () => { PageCours.filtres.favoris = !PageCours.filtres.favoris; PageCours.rendre(); });
     principal.querySelector("[data-gerer-matieres]").addEventListener("click", ouvrirGestionMatieres);
@@ -3300,6 +3328,7 @@ const PageNotion = {
       <div class="flex items-centre justify-entre gap-sm flex-wrap mb-lg">
         <div class="flex items-centre gap-sm">${icono(TYPES_NOTION[notion.type]?.icone||"cerveau","icone-lg")}<h1>${Utils.echapperHtml(notion.titre)}</h1></div>
         <div class="flex items-centre gap-sm">
+          ${notion.favori ? icono("etoile","icone-sm") : ""}
           ${badgeStatut(p.statut)}
           <button type="button" class="bouton-icone" data-options-notion aria-label="Options">${icono("points_verticaux")}</button>
         </div>
@@ -3359,10 +3388,14 @@ const PageNotion = {
     principal.querySelector("[data-options-notion]").addEventListener("click", (e) => {
       e.stopPropagation();
       const html = `
+        <button class="item-menu" data-opt="favori">${icono("etoile","icone-sm")} ${notion.favori?"Retirer des favoris":"Ajouter aux favoris"}</button>
+        <button class="item-menu" data-opt="dupliquer">${icono("dossier","icone-sm")} Dupliquer</button>
         <button class="item-menu" data-opt="modifier">${icono("crayon","icone-sm")} Modifier</button>
         <button class="item-menu danger" data-opt="supprimer">${icono("poubelle","icone-sm")} Supprimer</button>
       `;
       const panneau = Coquille.ouvrirMenuDeroulant(e.currentTarget, html);
+      panneau.querySelector('[data-opt="favori"]').onclick = async () => { panneau.remove(); await Store.modifier("notions", notion.id, { favori: !notion.favori }); PageNotion.rendre({ id }); };
+      panneau.querySelector('[data-opt="dupliquer"]').onclick = async () => { panneau.remove(); const copie = await Store.dupliquerNotion(notion); Toast.succes("Définition dupliquée."); Routeur.aller(`notion/${copie.id}`); };
       panneau.querySelector('[data-opt="modifier"]').onclick = () => { panneau.remove(); ouvrirEditionNotion(notion, () => PageNotion.rendre({ id })); };
       panneau.querySelector('[data-opt="supprimer"]').onclick = async () => {
         panneau.remove();
@@ -3393,6 +3426,7 @@ const PageDefinitions = {
     if (f.niveau === "a_apprendre") notions = notions.filter(n => n.progression.etapeIndex === 0);
     else if (f.niveau === "fragiles") notions = notions.filter(n => ["rouge","orange"].includes(n.progression.statut));
     else if (f.niveau === "maitrisees") notions = notions.filter(n => ["vert","bleu"].includes(n.progression.statut));
+    else if (f.niveau === "favoris") notions = notions.filter(n => n.favori);
     if (f.recherche) {
       const r = Utils.normaliserTexte(f.recherche);
       notions = notions.filter(n => Utils.normaliserTexte(n.titre).includes(r) || Utils.normaliserTexte(n.reponse).includes(r));
@@ -3418,7 +3452,7 @@ const PageDefinitions = {
         <select class="champ" style="width:auto" data-filtre="chapitreId" ${chapitreOptions.length?"":"disabled"}><option value="">Tous les chapitres</option>${chapitreOptions.map(ch => `<option value="${ch.id}" ${f.chapitreId===ch.id?"selected":""}>${Utils.echapperHtml(ch.titre)}</option>`).join("")}</select>
       </div>
       <div class="onglets mb-lg" style="border-bottom:none;flex-wrap:wrap">
-        ${[["toutes","Toutes"],["a_apprendre","À apprendre"],["fragiles","Fragiles"],["maitrisees","Maîtrisées"]].map(([v,l]) => `<button class="badge ${f.niveau===v?"badge-neutre":""}" style="cursor:pointer;border:1px solid var(--bordure)" data-niveau="${v}">${l}</button>`).join("")}
+        ${[["toutes","Toutes"],["a_apprendre","À apprendre"],["fragiles","Fragiles"],["maitrisees","Maîtrisées"],["favoris","★ Favoris"]].map(([v,l]) => `<button class="badge ${f.niveau===v?"badge-neutre":""}" style="cursor:pointer;border:1px solid var(--bordure)" data-niveau="${v}">${l}</button>`).join("")}
       </div>
       <div class="flex items-centre justify-entre flex-wrap gap-sm mb-md">
         <span class="texte-2 texte-petit">${notions.length} définition${notions.length>1?"s":""}${PageDefinitions.selection.size ? ` · ${PageDefinitions.selection.size} sélectionnée${PageDefinitions.selection.size>1?"s":""}` : ""}</span>
@@ -3451,6 +3485,7 @@ const PageDefinitions = {
           <div class="flex items-centre justify-entre gap-sm flex-wrap">
             <a href="#/notion/${n.id}" class="texte-semi tronque">${Utils.echapperHtml(n.titre)}</a>
             <div class="flex items-centre gap-xs">
+              ${n.favori ? icono("etoile","icone-sm") : ""}
               ${badgeStatut(p.statut)}
               <button type="button" class="bouton-icone" data-options-def="${n.id}" aria-label="Options">${icono("points_verticaux")}</button>
             </div>
@@ -3511,12 +3546,16 @@ const PageDefinitions = {
       const html = `
         <button class="item-menu" data-opt="reapprendre">${icono("livre_ouvert","icone-sm")} ${notion.progression.etapeIndex === 0 ? "Apprendre" : "Réapprendre"}</button>
         <button class="item-menu" data-opt="reviser">${icono("cerveau","icone-sm")} Réviser maintenant</button>
+        <button class="item-menu" data-opt="favori">${icono("etoile","icone-sm")} ${notion.favori?"Retirer des favoris":"Ajouter aux favoris"}</button>
+        <button class="item-menu" data-opt="dupliquer">${icono("dossier","icone-sm")} Dupliquer</button>
         <button class="item-menu" data-opt="modifier">${icono("crayon","icone-sm")} Modifier</button>
         <button class="item-menu danger" data-opt="supprimer">${icono("poubelle","icone-sm")} Supprimer</button>
       `;
       const panneau = Coquille.ouvrirMenuDeroulant(e.currentTarget, html);
       panneau.querySelector('[data-opt="reapprendre"]').onclick = () => { panneau.remove(); PageSession.demarrer("apprentissage", { notions: [notion], forcer: true }); };
       panneau.querySelector('[data-opt="reviser"]').onclick = () => { panneau.remove(); PageSession.demarrer("reviser", { notions: [notion], forcer: true }); };
+      panneau.querySelector('[data-opt="favori"]').onclick = async () => { panneau.remove(); await Store.modifier("notions", notion.id, { favori: !notion.favori }); PageDefinitions.rendre(); };
+      panneau.querySelector('[data-opt="dupliquer"]').onclick = async () => { panneau.remove(); await Store.dupliquerNotion(notion); Toast.succes("Définition dupliquée."); PageDefinitions.rendre(); };
       panneau.querySelector('[data-opt="modifier"]').onclick = () => { panneau.remove(); ouvrirEditionNotion(notion, () => PageDefinitions.rendre()); };
       panneau.querySelector('[data-opt="supprimer"]').onclick = async () => {
         panneau.remove();

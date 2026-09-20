@@ -77,7 +77,8 @@ service cloud.firestore {
         && listeFacultative(d, 'elements') && texteFacultatif(d, 'coursId', 200)
         && texteFacultatif(d, 'matiereId', 200) && texteFacultatif(d, 'chapitreId', 200)
         && nombreFacultatif(d, 'importance') && nombreFacultatif(d, 'difficulte')
-        && texteFacultatif(d, 'statutValidation', 50) && carteFacultative(d, 'progression');
+        && texteFacultatif(d, 'statutValidation', 50) && carteFacultative(d, 'progression')
+        && boolFacultatif(d, 'favori');
     }
     function historiqueValide(d) {
       return texteFacultatif(d, 'notionId', 200) && texteFacultatif(d, 'date', 50)
