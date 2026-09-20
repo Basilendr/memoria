@@ -1050,6 +1050,9 @@ function rendreChamp(champ, valeurs){
     case "date":
       entree = `<input class="champ" type="date" name="${champ.cle}" value="${val ?? ""}" ${requis}>`;
       break;
+    case "heure":
+      entree = `<input class="champ" type="time" name="${champ.cle}" value="${val ?? ""}" ${requis}>`;
+      break;
     case "motdepasse":
       entree = `<input class="champ" type="password" name="${champ.cle}" autocomplete="${champ.autocomplete||"new-password"}" ${requis}>`;
       break;
@@ -4559,6 +4562,77 @@ const PageEvaluationHistorique = {
 };
 
 /* ==================== G9. CALENDRIER ==================== */
+// Une "évaluation scolaire" (collection `controles`, déjà existante) est un contrôle réel à
+// venir — matière/chapitre/cours facultatifs pour cibler les notions concernées, date + heure.
+// Distincte des "Évaluations" (auto-testées, onglet G8b) : ici, pas de tentative ni de score,
+// juste une échéance et un plan de révision généré pour s'y préparer (§32-33 du cahier des
+// charges). Formulaire dédié plutôt que ouvrirFormulaire générique : les sélecteurs
+// matière→cours→chapitre doivent se mettre à jour en cascade au fil de la saisie.
+function ouvrirEditionControle(controleExistant){
+  const etat = {
+    nom: controleExistant?.nom || "", date: controleExistant?.date || Utils.versDateISO(new Date()),
+    heure: controleExistant?.heure || "", matiereId: controleExistant?.matiereId || "",
+    coursId: controleExistant?.coursId || "", chapitreId: controleExistant?.chapitreId || "",
+  };
+  const rendreZones = () => {
+    const cours = etat.matiereId ? Selecteurs.coursDeMatiere(etat.matiereId) : [];
+    const chapitres = etat.coursId ? Selecteurs.chapitresDeCours(etat.coursId) : [];
+    document.getElementById("ctrlZoneCours").innerHTML = etat.matiereId ? `
+      <div class="groupe-champ"><label>Dossier (facultatif)</label><select class="champ" id="ctrl-cours">
+        <option value="">Tous les dossiers de cette matière</option>
+        ${cours.map(c => `<option value="${c.id}" ${etat.coursId===c.id?"selected":""}>${Utils.echapperHtml(c.titre)}</option>`).join("")}
+      </select></div>` : "";
+    document.getElementById("ctrlZoneChapitre").innerHTML = etat.coursId ? `
+      <div class="groupe-champ"><label>Chapitre (facultatif)</label><select class="champ" id="ctrl-chapitre">
+        <option value="">Tout le dossier</option>
+        ${chapitres.map(ch => `<option value="${ch.id}" ${etat.chapitreId===ch.id?"selected":""}>${Utils.echapperHtml(ch.titre)}</option>`).join("")}
+      </select></div>` : "";
+    document.getElementById("ctrlZoneCours").querySelector("#ctrl-cours")?.addEventListener("change", (e) => { etat.coursId = e.target.value; etat.chapitreId = ""; rendreZones(); });
+    document.getElementById("ctrlZoneChapitre").querySelector("#ctrl-chapitre")?.addEventListener("change", (e) => { etat.chapitreId = e.target.value; });
+  };
+  const html = `
+    <div class="entete-modale"><h3>${controleExistant ? "Modifier" : "Ajouter"} une évaluation scolaire</h3><button class="bouton-icone" data-fermer aria-label="Fermer">${icono("croix")}</button></div>
+    <div class="groupe-champ"><label>Nom</label><input class="champ" type="text" id="ctrl-nom" value="${Utils.echapperHtml(etat.nom)}" placeholder="Ex. Contrôle d'histoire"></div>
+    <div class="rangee-champs">
+      <div class="groupe-champ"><label>Date</label><input class="champ" type="date" id="ctrl-date" value="${etat.date}"></div>
+      <div class="groupe-champ"><label>Heure (facultatif)</label><input class="champ" type="time" id="ctrl-heure" value="${etat.heure}"></div>
+    </div>
+    <div class="groupe-champ"><label>Matière (facultatif)</label><select class="champ" id="ctrl-matiere">
+      <option value="">Toutes les matières</option>
+      ${Etat.donnees.matieres.map(m => `<option value="${m.id}" ${etat.matiereId===m.id?"selected":""}>${Utils.echapperHtml(m.nom)}</option>`).join("")}
+    </select></div>
+    <div id="ctrlZoneCours"></div>
+    <div id="ctrlZoneChapitre"></div>
+    <div class="pied-modale">
+      ${controleExistant ? `<button type="button" class="bouton bouton-danger" data-supprimer style="margin-right:auto">${icono("poubelle","icone-sm")} Supprimer</button>` : ""}
+      <button type="button" class="bouton bouton-fantome" data-fermer>Annuler</button>
+      <button type="button" class="bouton bouton-primaire" data-valider>Enregistrer</button>
+    </div>
+  `;
+  Modale.ouvrir(html, { classe: "modale-formulaire" });
+  const modaleEl = Modale.pile[Modale.pile.length - 1].el;
+  rendreZones();
+  modaleEl.querySelectorAll("[data-fermer]").forEach(b => b.addEventListener("click", () => Modale.fermer()));
+  modaleEl.querySelector("#ctrl-matiere").addEventListener("change", (e) => { etat.matiereId = e.target.value; etat.coursId = ""; etat.chapitreId = ""; rendreZones(); });
+  modaleEl.querySelector("[data-supprimer]")?.addEventListener("click", async () => {
+    const ok = await confirmerAction({ titre: "Supprimer cette évaluation scolaire ?", message: "Le plan de révision associé sera aussi supprimé.", libelleConfirmer: "Supprimer", danger: true });
+    if (ok) { Modale.fermer(); await Store.supprimer("controles", controleExistant.id); Toast.succes("Évaluation scolaire supprimée."); PageCalendrier.rendre(); }
+  });
+  modaleEl.querySelector("[data-valider]").addEventListener("click", async () => {
+    const nom = modaleEl.querySelector("#ctrl-nom").value.trim();
+    const date = modaleEl.querySelector("#ctrl-date").value;
+    if (!nom || !date) return Toast.erreur("Le nom et la date sont obligatoires.");
+    const donnees = {
+      nom, date, heure: modaleEl.querySelector("#ctrl-heure").value || null,
+      matiereId: etat.matiereId || null, coursId: etat.coursId || null, chapitreId: etat.chapitreId || null,
+    };
+    Modale.fermer();
+    if (controleExistant) { await Store.modifier("controles", controleExistant.id, donnees); Toast.succes("Évaluation scolaire modifiée."); }
+    else { await Store.ajouter("controles", { ...donnees, plan: null }); Toast.succes("Évaluation scolaire ajoutée au calendrier."); }
+    PageCalendrier.rendre();
+  });
+}
+
 const PageCalendrier = {
   moisAffiche: new Date(new Date().getFullYear(), new Date().getMonth(), 1),
   jourSelectionne: null,
@@ -4567,9 +4641,13 @@ const PageCalendrier = {
     const principal = document.getElementById("contenu-principal");
     const controleProche = [...Etat.donnees.controles].filter(c => new Date(c.date) >= new Date(Utils.versDateISO(new Date()))).sort((a,b) => new Date(a.date)-new Date(b.date))[0];
     principal.innerHTML = `
+      <div class="flex items-centre justify-entre gap-sm mb-lg flex-wrap">
+        <p class="texte-2" style="margin:0">Tes révisions et tes évaluations scolaires, au même endroit.</p>
+        <button class="bouton bouton-primaire bouton-sm" data-nouveau-controle>${icono("plus","icone-sm")} Évaluation scolaire</button>
+      </div>
       ${controleProche ? `<div class="carte mb-lg" style="border-color:var(--accent)"><div class="flex items-centre justify-entre gap-md flex-wrap">
-        <div class="flex items-centre gap-sm">${icono("drapeau")}<span><strong>${Utils.echapperHtml(controleProche.nom)}</strong> — ${Utils.formaterDateRelative(controleProche.date)}</span></div>
-        <button class="bouton bouton-secondaire bouton-sm" data-organiser="${controleProche.id}">${icono("cible","icone-sm")} Organiser mes révisions</button>
+        <div class="flex items-centre gap-sm">${icono("drapeau")}<span><strong>${Utils.echapperHtml(controleProche.nom)}</strong> — ${Utils.formaterDateRelative(controleProche.date)}${controleProche.heure ? ` à ${controleProche.heure}` : ""}</span></div>
+        <button class="bouton bouton-secondaire bouton-sm" data-voir-controle="${controleProche.id}">${icono("cible","icone-sm")} ${controleProche.plan ? "Voir mon plan de révision" : "Préparer ma révision"}</button>
       </div></div>` : ""}
       <div class="flex items-centre justify-entre mb-md">
         <button class="bouton-icone" data-mois="-1" aria-label="Mois précédent">${icono("chevron_droit","icone-sm")}</button>
@@ -4584,10 +4662,9 @@ const PageCalendrier = {
     `;
     principal.querySelectorAll("[data-mois]").forEach(b => b.addEventListener("click", () => { PageCalendrier.moisAffiche.setMonth(PageCalendrier.moisAffiche.getMonth() + Number(b.dataset.mois)); PageCalendrier.rendre(); }));
     principal.querySelectorAll("[data-jour]").forEach(el => el.addEventListener("click", () => { PageCalendrier.jourSelectionne = el.dataset.jour; PageCalendrier.rendreDetail(); }));
-    principal.querySelector("[data-organiser]")?.addEventListener("click", async (e) => {
-      await PageCalendrier.planifierAvantControle(Etat.donnees.controles.find(c => c.id === e.target.closest("[data-organiser]").dataset.organiser));
-      Toast.succes("Tes révisions ont été réparties jusqu'au contrôle.");
-      PageCalendrier.rendre();
+    principal.querySelector("[data-nouveau-controle]").addEventListener("click", () => ouvrirEditionControle());
+    principal.querySelector("[data-voir-controle]")?.addEventListener("click", (e) => {
+      PageCalendrier.ouvrirDetailControle(Etat.donnees.controles.find(c => c.id === e.target.closest("[data-voir-controle]").dataset.voirControle));
     });
     if (PageCalendrier.jourSelectionne) PageCalendrier.rendreDetail();
   },
@@ -4597,6 +4674,7 @@ const PageCalendrier = {
     const debutGrille = new Date(debutMois); debutGrille.setDate(debutGrille.getDate() - decalage);
     const notions = Selecteurs.toutesNotionsValidees();
     const controles = Etat.donnees.controles;
+    const phasesParJour = PageCalendrier.toutesLesPhases();
     let html = "";
     for (let i = 0; i < 42; i++) {
       const jour = new Date(debutGrille); jour.setDate(jour.getDate() + i);
@@ -4604,28 +4682,147 @@ const PageCalendrier = {
       const dansMois = jour.getMonth() === PageCalendrier.moisAffiche.getMonth();
       const nb = notions.filter(n => Utils.versDateISO(n.progression.prochaineRevision) === iso).length;
       const aControle = controles.some(c => c.date === iso);
+      const aPhase = !!phasesParJour[iso];
       const estAujourdhui = Utils.estMemeJour(jour, new Date());
       html += `<button type="button" class="case-calendrier ${!dansMois?"hors-mois":""} ${estAujourdhui?"aujourdhui":""} ${PageCalendrier.jourSelectionne===iso?"selectionnee":""}" data-jour="${iso}">
         <span>${jour.getDate()}</span>
-        ${nb ? `<span class="pastille-nb">${nb}</span>` : ""}${aControle ? `<span class="pastille-controle"></span>` : ""}
+        ${nb ? `<span class="pastille-nb">${nb}</span>` : ""}${aControle ? `<span class="pastille-controle"></span>` : ""}${aPhase && !aControle ? `<span class="pastille-controle" style="background:var(--primaire)"></span>` : ""}
       </button>`;
       if (i === 41) break;
     }
     return html;
+  },
+  // Toutes les étapes de tous les plans de révision, indexées par jour — sert uniquement à
+  // afficher une pastille sur la grille (évite de recalculer à chaque case).
+  toutesLesPhases(){
+    const parJour = {};
+    for (const c of Etat.donnees.controles) (c.plan || []).forEach(p => { (parJour[p.jour] ||= []).push({ ...p, controle: c }); });
+    return parJour;
   },
   rendreDetail(){
     const zone = document.getElementById("detailJourCalendrier");
     const iso = PageCalendrier.jourSelectionne;
     const notions = Selecteurs.toutesNotionsValidees().filter(n => Utils.versDateISO(n.progression.prochaineRevision) === iso);
     const controles = Etat.donnees.controles.filter(c => c.date === iso);
+    const phases = PageCalendrier.toutesLesPhases()[iso] || [];
     zone.innerHTML = `<h3 class="mb-sm">${Utils.formaterDate(iso)}</h3>
-      ${controles.map(c => `<div class="badge badge-orange mb-sm">${icono("drapeau","icone-xs")} ${Utils.echapperHtml(c.nom)}</div>`).join("")}
-      ${notions.length ? `<div class="flex-col gap-sm">${notions.map(n => `<a href="#/notion/${n.id}" class="carte carte-cliquable flex items-centre gap-sm"><span class="flex-1 texte-petit">${Utils.echapperHtml(n.titre)}</span>${badgeStatut(n.progression.statut)}</a>`).join("")}</div>` : `<p class="texte-2 texte-petit">Rien de prévu ce jour-là.</p>`}`;
+      ${controles.map(c => `<button type="button" class="badge badge-orange mb-sm" style="cursor:pointer" data-controle="${c.id}">${icono("drapeau","icone-xs")} ${Utils.echapperHtml(c.nom)}${c.heure ? ` à ${c.heure}` : ""}</button>`).join("")}
+      ${phases.length ? `<div class="flex-col gap-sm mb-sm">${phases.map(p => `<div class="carte carte-cliquable flex items-centre gap-sm" data-phase-controle="${p.controle.id}">${icono("cible","icone-sm")}<div class="flex-1"><div class="texte-petit texte-semi">${Utils.echapperHtml(p.titre)}</div><div class="texte-xs texte-2">Pour « ${Utils.echapperHtml(p.controle.nom)} »</div></div>${icono("chevron_droit","icone-sm")}</div>`).join("")}</div>` : ""}
+      ${notions.length ? `<div class="flex-col gap-sm">${notions.map(n => `<a href="#/notion/${n.id}" class="carte carte-cliquable flex items-centre gap-sm"><span class="flex-1 texte-petit">${Utils.echapperHtml(n.titre)}</span>${badgeStatut(n.progression.statut)}</a>`).join("")}</div>` : (!controles.length && !phases.length ? `<p class="texte-2 texte-petit">Rien de prévu ce jour-là.</p>` : "")}`;
+    zone.querySelectorAll("[data-controle]").forEach(b => b.addEventListener("click", () => PageCalendrier.ouvrirDetailControle(Etat.donnees.controles.find(c => c.id === b.dataset.controle))));
+    zone.querySelectorAll("[data-phase-controle]").forEach(b => b.addEventListener("click", () => PageCalendrier.ouvrirDetailControle(Etat.donnees.controles.find(c => c.id === b.dataset.phaseControle))));
   },
+
+  // Notions concernées par une évaluation scolaire : filtre progressif matière → cours →
+  // chapitre, ou toutes les notions si rien n'est précisé (contrôle "général").
+  notionsDuControle(controle){
+    let notions = Selecteurs.toutesNotionsValidees();
+    if (controle.matiereId) notions = notions.filter(n => n.matiereId === controle.matiereId);
+    if (controle.coursId) notions = notions.filter(n => n.coursId === controle.coursId);
+    if (controle.chapitreId) notions = notions.filter(n => n.chapitreId === controle.chapitreId);
+    return notions;
+  },
+
+  // §33 : un vrai plan de révision automatique (pas juste un étalement de dates), qui analyse
+  // jours restants / maîtrise / notions fragiles / historique, façon J-7…J-1 — mais adapté au
+  // nombre RÉEL de jours restants (l'exemple du cahier des charges suppose 7 jours, ce ne sera
+  // pas toujours le cas). Chaque étape cible directement le bon mode/les bonnes notions, pour
+  // qu'un clic depuis le calendrier lance la session sans autre réglage.
+  async genererPlanRevision(controle){
+    const cible = PageCalendrier.notionsDuControle(controle);
+    if (!cible.length) { Toast.erreur("Aucune notion ne correspond à cette évaluation — vérifie la matière/le dossier choisis."); return null; }
+    const aujourdhui = new Date(Utils.versDateISO(new Date()) + "T00:00:00");
+    const dateControle = new Date(controle.date + "T00:00:00");
+    const joursRestants = Math.max(1, Math.round((dateControle - aujourdhui) / JOUR));
+    const nouvelles = cible.filter(n => n.progression.etapeIndex === 0);
+    const fragiles = cible.filter(n => n.progression.etapeIndex > 0 && ["rouge","orange"].includes(n.progression.statut));
+
+    const etapesPossibles = [
+      { cle: "decouverte", titre: "Nouvelles notions", description: `Apprendre en profondeur les ${nouvelles.length} notion${nouvelles.length>1?"s":""} pas encore vue${nouvelles.length>1?"s":""}.`, mode: "apprentissage", notions: nouvelles, active: nouvelles.length > 0 },
+      { cle: "rappels", titre: "Premiers rappels", description: "Réviser l'ensemble pour bien ancrer ce qui vient d'être vu.", mode: "reviser", notions: cible, active: true },
+      { cle: "fragiles", titre: "Notions fragiles", description: fragiles.length ? `Se concentrer sur ${fragiles.length>1?"les":"la"} ${fragiles.length} notion${fragiles.length>1?"s":""} encore fragile${fragiles.length>1?"s":""}.` : "Révision active de l'ensemble.", mode: "cible", notions: fragiles.length ? fragiles : cible, active: fragiles.length > 0 || joursRestants >= 3 },
+      { cle: "restitution", titre: "Restitution complète", description: "Réécrire toutes les définitions de mémoire, sans aide — pour vérifier ce que tu sais VRAIMENT restituer.", mode: "evaluation", notions: cible, active: true },
+      { cle: "final", titre: "Révision finale + examen blanc", description: "Dernières erreurs à combler, puis un examen blanc complet avant le jour J.", mode: "examen", notions: cible, active: true },
+    ].filter(e => e.active);
+
+    const n = etapesPossibles.length;
+    const dernierJourUtile = Math.max(0, joursRestants - 1); // jamais le jour du contrôle lui-même
+    const plan = etapesPossibles.map((e, i) => {
+      const decalage = n > 1 ? Math.round((i / (n - 1)) * dernierJourUtile) : dernierJourUtile;
+      const jour = new Date(aujourdhui.getTime() + decalage * JOUR);
+      return { jour: Utils.versDateISO(jour), cle: e.cle, titre: e.titre, description: e.description, mode: e.mode, notionsIds: e.notions.map(x => x.id) };
+    });
+    await Store.modifier("controles", controle.id, { plan });
+    return plan;
+  },
+
+  lancerPhase(phase){
+    const notions = (phase.notionsIds || []).map(id => Selecteurs.notion(id)).filter(Boolean);
+    if (!notions.length) return Toast.erreur("Ces notions n'existent plus.");
+    if (phase.mode === "evaluation") { Etat.ui.selectionEvaluation = notions.map(n => n.id); Routeur.aller("evaluations/nouvelle"); }
+    else if (phase.mode === "examen") Routeur.aller("examen");
+    else PageSession.demarrer(phase.mode, { notions, forcer: true });
+  },
+
+  ouvrirDetailControle(controle){
+    if (!controle) return;
+    const cible = PageCalendrier.notionsDuControle(controle);
+    const scope = [controle.matiereId && Selecteurs.matiere(controle.matiereId)?.nom, controle.coursId && Selecteurs.cours(controle.coursId)?.titre, controle.chapitreId && Selecteurs.chapitresDeCours(controle.coursId).find(ch=>ch.id===controle.chapitreId)?.titre].filter(Boolean).join(" · ") || "Toutes les matières";
+    const rendreContenu = () => `
+      <div class="entete-modale"><h3>${Utils.echapperHtml(controle.nom)}</h3><button class="bouton-icone" data-fermer aria-label="Fermer">${icono("croix")}</button></div>
+      <p class="texte-2 texte-petit mb-sm">${Utils.formaterDate(controle.date)}${controle.heure ? ` à ${controle.heure}` : ""} · ${Utils.echapperHtml(scope)} · ${cible.length} notion${cible.length>1?"s":""} concernée${cible.length>1?"s":""}</p>
+      ${controle.plan ? `
+        <h4 class="mb-sm mt-md">Ton plan de révision</h4>
+        <div class="flex-col gap-sm mb-md">
+          ${controle.plan.map(p => `<button type="button" class="carte carte-cliquable flex items-centre gap-sm" style="width:100%;text-align:left" data-lancer-phase="${p.cle}">
+            <div class="flex-1"><div class="texte-petit texte-semi">${Utils.echapperHtml(p.titre)}</div><div class="texte-xs texte-2">${Utils.formaterDateCourte(p.jour)} · ${Utils.echapperHtml(p.description)}</div></div>
+            ${icono("chevron_droit","icone-sm")}
+          </button>`).join("")}
+        </div>
+        <button type="button" class="bouton bouton-fantome bouton-sm" data-regenerer>${icono("cible","icone-sm")} Regénérer le plan</button>
+      ` : `<button type="button" class="bouton bouton-primaire bouton-large mt-md" data-preparer>${icono("cible","icone-sm")} Préparer ma révision</button>`}
+      <div class="flex gap-sm mt-lg">
+        <button type="button" class="bouton bouton-secondaire flex-1" data-modifier>${icono("crayon","icone-sm")} Modifier</button>
+        <button type="button" class="bouton bouton-fantome flex-1" data-fermer>Fermer</button>
+      </div>
+    `;
+    Modale.ouvrir(rendreContenu(), { classe: "modale-formulaire" });
+    const attacher = () => {
+      const modaleEl = Modale.pile[Modale.pile.length - 1].el;
+      modaleEl.querySelectorAll("[data-fermer]").forEach(b => b.addEventListener("click", () => Modale.fermer()));
+      modaleEl.querySelector("[data-modifier]").addEventListener("click", () => { Modale.fermer(); ouvrirEditionControle(controle); });
+      modaleEl.querySelector("[data-preparer]")?.addEventListener("click", async () => {
+        const plan = await PageCalendrier.genererPlanRevision(controle);
+        if (!plan) return;
+        controle.plan = plan;
+        modaleEl.innerHTML = rendreContenu();
+        attacher();
+        PageCalendrier.rendre();
+      });
+      modaleEl.querySelector("[data-regenerer]")?.addEventListener("click", async () => {
+        const plan = await PageCalendrier.genererPlanRevision(controle);
+        if (!plan) return;
+        controle.plan = plan;
+        Toast.succes("Plan de révision mis à jour.");
+        modaleEl.innerHTML = rendreContenu();
+        attacher();
+        PageCalendrier.rendre();
+      });
+      modaleEl.querySelectorAll("[data-lancer-phase]").forEach(b => b.addEventListener("click", () => {
+        const phase = controle.plan.find(p => p.cle === b.dataset.lancerPhase);
+        Modale.fermer();
+        PageCalendrier.lancerPhase(phase);
+      }));
+    };
+    attacher();
+  },
+
+  // Étalement simple et rapide (sans plan détaillé) : encore utilisé par la préparation
+  // automatique comme base avant génération du plan structuré ci-dessus.
   async planifierAvantControle(controle){
     if (!controle) return;
     const joursRestants = Math.max(1, Math.ceil((new Date(controle.date) - new Date()) / JOUR));
-    const notions = Selecteurs.toutesNotionsValidees().filter(n => n.progression.statut !== "bleu").sort((a,b) => Revision.calculerPriorite(b) - Revision.calculerPriorite(a));
+    const notions = PageCalendrier.notionsDuControle(controle).filter(n => n.progression.statut !== "bleu").sort((a,b) => Revision.calculerPriorite(b) - Revision.calculerPriorite(a));
     const parJour = Math.max(1, Math.ceil(notions.length / joursRestants));
     for (const [i, n] of notions.entries()) {
       const jourCible = Math.min(joursRestants - 1, Math.floor(i / parJour));

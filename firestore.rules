@@ -100,8 +100,14 @@ service cloud.firestore {
         && nombreFacultatif(d, 'reussites') && nombreFacultatif(d, 'fragiles') && nombreFacultatif(d, 'aRevoir')
         && nombreFacultatif(d, 'dureeSecondes') && listeFacultative(d, 'details');
     }
+    // "Évaluation scolaire" : nom + date obligatoires, tout le reste facultatif — matière/
+    // cours/chapitre ciblent les notions concernées, `plan` (liste de maps, comme
+    // evaluations.details) est le plan de révision généré par Préparer ma révision.
     function controleValide(d) {
-      return texteFacultatif(d, 'nom', 200) && texteFacultatif(d, 'date', 50);
+      return texteFacultatif(d, 'nom', 200) && texteFacultatif(d, 'date', 50)
+        && texteOuNulFacultatif(d, 'heure', 10) && texteOuNulFacultatif(d, 'matiereId', 200)
+        && texteOuNulFacultatif(d, 'coursId', 200) && texteOuNulFacultatif(d, 'chapitreId', 200)
+        && (!('plan' in d) || d.plan == null || d.plan is list);
     }
     function notificationValide(d) {
       return texteFacultatif(d, 'destinataireId', 200) && texteFacultatif(d, 'type', 50)
