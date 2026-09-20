@@ -2353,6 +2353,7 @@ const Coquille = {
     const nbNonLues = Selecteurs.notificationsNonLues().length;
     document.getElementById("enteteApp").innerHTML = `
       <h1 class="titre-page-entete" id="titrePageEntete">${TITRES_PAGES[Etat.ui.pageActuelle] || ""}</h1>
+      <button class="bouton-icone" data-action="recherche-globale" aria-label="Rechercher">${icono("recherche")}</button>
       <button class="bouton-icone" data-action="basculer-theme" aria-label="Changer de thème">${icono(Theme.actuel()==="sombre"?"lune":Theme.actuel()==="clair"?"soleil":"moniteur")}</button>
       <button class="bouton-icone bouton-cloche" data-action="notifications" aria-label="Notifications (${nbNonLues} non lues)">${icono("cloche")}${nbNonLues ? '<span class="pastille"></span>' : ""}</button>
       <button class="avatar" data-action="menu-profil" aria-label="Menu profil">${Etat.profil?.photoURL ? `<img src="${Etat.profil.photoURL}" alt="">` : Utils.initiales(Etat.profil?.prenom, Etat.profil?.nom)}</button>
@@ -2468,13 +2469,18 @@ const PageDashboard = {
     const coursActifs = Etat.donnees.cours.filter(c => !c.archive);
     const erreursRecentes = Etat.donnees.historique.filter(h => h.resultat === false && (Date.now() - new Date(h.date)) < 3 * JOUR).length;
     const nouveauxChapitres = Etat.donnees.chapitres.filter(ch => (Date.now() - new Date(ch.dateCreation)) < 7 * JOUR).length;
+    const suggestion = PageDashboard.suggestionPrincipale({ notionsValidees, dues, fragiles: Revision.notionsFragiles(notionsValidees) });
 
     principal.innerHTML = `
       <div class="salutation"><h1>Bonjour ${Utils.echapperHtml(Etat.profil.prenom||"")}</h1>${Etat.profil.streak > 0 ? `<div class="bande-streak mt-sm">${icono("feu","icone-sm")} ${Etat.profil.streak} jour${Etat.profil.streak>1?"s":""} d'affilée</div>` : ""}</div>
 
-      <div class="carte-revisions-jour">
-        <div><div class="texte-petit" style="opacity:.85">RÉVISIONS DU JOUR</div><div class="nombre">${dues.length}</div><div>${dues.length ? "notion"+(dues.length>1?"s":"")+" à revoir" : "Tu es à jour !"}</div></div>
-        ${dues.length ? `<button class="bouton bouton-primaire bouton-lg" data-action="commencer-session" data-mode="reviser">${icono("cerveau","icone-sm")} Commencer mes révisions</button>` : `<div class="badge" style="background:rgba(255,255,255,.2);color:#fff">${icono("coche","icone-sm")} Bravo</div>`}
+      <h2 class="mb-sm">Que dois-je faire maintenant ?</h2>
+      <div class="carte mb-lg" style="border-color:var(--primaire)">
+        <div class="flex items-centre gap-md flex-wrap">
+          <div style="color:var(--primaire)">${icono(suggestion.icone,"icone-lg")}</div>
+          <div class="flex-1"><div class="texte-semi">${Utils.echapperHtml(suggestion.titre)}</div><div class="texte-2 texte-petit">${Utils.echapperHtml(suggestion.description)}</div></div>
+          <button class="bouton bouton-primaire" id="suggestionAction">${Utils.echapperHtml(suggestion.libelle)}</button>
+        </div>
       </div>
 
       <div class="grille-stats-rapides">
@@ -2485,10 +2491,11 @@ const PageDashboard = {
       </div>
 
       <div class="grille-raccourcis">
-        <a href="#/cartes/nouveau" class="carte carte-cliquable raccourci">${icono("zap","icone-lg")}<span class="texte-petit texte-semi">Cartes rapides</span></a>
+        <a href="#/cartes/nouveau" class="carte carte-cliquable raccourci">${icono("zap","icone-lg")}<span class="texte-petit texte-semi">Créer des cartes</span></a>
         <a href="#/cours/nouveau" class="carte carte-cliquable raccourci">${icono("plus","icone-lg")}<span class="texte-petit texte-semi">Ajouter un cours</span></a>
-        <a href="#/cours" class="carte carte-cliquable raccourci">${icono("livre","icone-lg")}<span class="texte-petit texte-semi">Mes cours</span></a>
+        <a href="#/evaluations/nouvelle" class="carte carte-cliquable raccourci">${icono("crayon","icone-lg")}<span class="texte-petit texte-semi">Créer une évaluation</span></a>
         <a href="#/reviser" class="carte carte-cliquable raccourci">${icono("cerveau","icone-lg")}<span class="texte-petit texte-semi">Réviser</span></a>
+        <a href="#/erreurs" class="carte carte-cliquable raccourci">${icono("alerte_triangle","icone-lg")}<span class="texte-petit texte-semi">Mes erreurs</span></a>
         <a href="#/stats" class="carte carte-cliquable raccourci">${icono("graphique","icone-lg")}<span class="texte-petit texte-semi">Progression</span></a>
       </div>
 
@@ -2510,6 +2517,43 @@ const PageDashboard = {
         }).join("") || `<p class="texte-2">Aucune matière pour l'instant.</p>`}
       </div>
     `;
+    document.getElementById("suggestionAction").addEventListener("click", suggestion.action);
+  },
+
+  // §53 : une seule recommandation, priorisée — pas une liste de possibilités parmi
+  // lesquelles choisir. Ordre de priorité : échéance proche > gros retard de révision >
+  // notions fragiles > révisions dues > nouvelles notions à apprendre > tout est à jour.
+  suggestionPrincipale({ notionsValidees, dues, fragiles }){
+    const controleProche = [...Etat.donnees.controles].filter(c => new Date(c.date) >= new Date(Utils.versDateISO(new Date()))).sort((a,b) => new Date(a.date)-new Date(b.date))[0];
+    const joursAvant = controleProche ? Math.ceil((new Date(controleProche.date) - new Date(Utils.versDateISO(new Date()))) / JOUR) : null;
+    const nouvelles = notionsValidees.filter(n => n.progression.etapeIndex === 0);
+
+    if (controleProche && joursAvant <= 5) return {
+      icone: "drapeau", titre: `${controleProche.nom} dans ${joursAvant} jour${joursAvant>1?"s":""}`,
+      description: controleProche.plan ? "Continue ton plan de révision pour être prêt(e) à temps." : "Prépare ta révision maintenant pour répartir l'effort avant le jour J.",
+      libelle: controleProche.plan ? "Voir mon plan" : "Préparer ma révision",
+      action: () => PageCalendrier.ouvrirDetailControle(controleProche),
+    };
+    if (dues.length >= 8) return {
+      icone: "cerveau", titre: `${dues.length} révisions en retard`, description: "Un vrai retard s'est accumulé — mieux vaut le rattraper avant qu'il ne grossisse encore.",
+      libelle: "Commencer mes révisions", action: () => PageSession.demarrer("reviser"),
+    };
+    if (fragiles.length >= 3) return {
+      icone: "alerte_triangle", titre: `${fragiles.length} notions fragiles`, description: "Ce sont celles que tu risques le plus d'oublier — autant les retravailler maintenant.",
+      libelle: "Travailler mes erreurs", action: () => Routeur.aller("erreurs"),
+    };
+    if (dues.length) return {
+      icone: "cerveau", titre: `${dues.length} notion${dues.length>1?"s":""} à revoir aujourd'hui`, description: "Une petite session suffit pour rester à jour.",
+      libelle: "Commencer mes révisions", action: () => PageSession.demarrer("reviser"),
+    };
+    if (nouvelles.length) return {
+      icone: "livre_ouvert", titre: `${nouvelles.length} nouvelle${nouvelles.length>1?"s":""} notion${nouvelles.length>1?"s":""} à apprendre`, description: "Autant les découvrir avant qu'elles ne s'accumulent.",
+      libelle: "Apprendre", action: () => PageSession.demarrerApprendre(),
+    };
+    return {
+      icone: "coche_cercle", titre: "Tu es à jour !", description: "Rien d'urgent — profites-en pour renforcer une notion déjà maîtrisée ou créer une évaluation.",
+      libelle: "Créer une évaluation", action: () => Routeur.aller("evaluations/nouvelle"),
+    };
   },
 };
 
@@ -3311,6 +3355,38 @@ function ouvrirEditionNotion(notion, apresAction){
       apresAction?.(true);
     },
   });
+}
+
+// Recherche globale (§36) : matières, cours, définitions et évaluations passées, au même
+// endroit — accessible depuis l'icône loupe de l'en-tête sur n'importe quelle page.
+function ouvrirRechercheGlobale(){
+  const ligneResultat = (icone, titre, sousTitre, route) => `<a href="#/${route}" class="carte carte-cliquable flex items-centre gap-sm" data-resultat>${icono(icone,"icone-sm")}<div class="flex-1" style="min-width:0"><div class="texte-petit texte-semi tronque">${titre}</div>${sousTitre ? `<div class="texte-xs texte-2 tronque">${sousTitre}</div>` : ""}</div></a>`;
+  const rendreResultats = (q) => {
+    const r = Utils.normaliserTexte(q.trim());
+    if (!r) return `<p class="texte-2 texte-petit">Tape pour chercher parmi tes matières, cours, définitions et évaluations.</p>`;
+    const matieres = Etat.donnees.matieres.filter(m => Utils.normaliserTexte(m.nom).includes(r));
+    const cours = Etat.donnees.cours.filter(c => !c.archive && Utils.normaliserTexte(c.titre).includes(r));
+    const notions = Selecteurs.toutesNotionsValidees().filter(n => Utils.normaliserTexte(n.titre).includes(r) || Utils.normaliserTexte(n.reponse).includes(r)).slice(0, 25);
+    const evaluations = Selecteurs.evaluations().filter(e => (e.details||[]).some(d => Utils.normaliserTexte(d.titre||"").includes(r)));
+    if (!matieres.length && !cours.length && !notions.length && !evaluations.length) return `<p class="texte-2 texte-petit">Aucun résultat pour « ${Utils.echapperHtml(q)} ».</p>`;
+    let html = "";
+    if (matieres.length) html += `<h4 class="texte-xs texte-2 mt-md mb-xs" style="text-transform:uppercase">Matières</h4><div class="flex-col gap-xs">${matieres.map(m => ligneResultat("livre", Utils.echapperHtml(m.nom), null, `cours?matiere=${m.id}`)).join("")}</div>`;
+    if (cours.length) html += `<h4 class="texte-xs texte-2 mt-md mb-xs" style="text-transform:uppercase">Cours &amp; paquets</h4><div class="flex-col gap-xs">${cours.map(c => ligneResultat(c.origine==="rapide"?"zap":"livre_ouvert", Utils.echapperHtml(c.titre), Selecteurs.matiere(c.matiereId)?.nom, `${c.origine==="rapide"?"cartes":"cours"}/${c.id}`)).join("")}</div>`;
+    if (notions.length) html += `<h4 class="texte-xs texte-2 mt-md mb-xs" style="text-transform:uppercase">Définitions</h4><div class="flex-col gap-xs">${notions.map(n => ligneResultat("cerveau", Utils.echapperHtml(n.titre), Utils.echapperHtml(n.reponse.slice(0,60)), `notion/${n.id}`)).join("")}</div>`;
+    if (evaluations.length) html += `<h4 class="texte-xs texte-2 mt-md mb-xs" style="text-transform:uppercase">Évaluations passées</h4><div class="flex-col gap-xs">${evaluations.map(e => ligneResultat("cible", `${e.reussites} / ${e.total} correctes`, Utils.formaterDateCourte(e.dateCreation), `evaluations/resultats/${e.id}`)).join("")}</div>`;
+    return html;
+  };
+  const html = `
+    <div class="entete-modale"><h3>Rechercher</h3><button class="bouton-icone" data-fermer aria-label="Fermer">${icono("croix")}</button></div>
+    <div class="recherche-entete" style="width:100%">${icono("recherche","icone-sm")}<input type="search" id="rechercheGlobaleInput" placeholder="Matières, cours, définitions, évaluations..." style="width:100%"></div>
+    <div id="rechercheGlobaleResultats" class="mt-sm">${rendreResultats("")}</div>
+  `;
+  Modale.ouvrir(html, { classe: "modale-formulaire" });
+  const modaleEl = Modale.pile[Modale.pile.length - 1].el;
+  modaleEl.querySelector("[data-fermer]").addEventListener("click", () => Modale.fermer());
+  const zoneResultats = modaleEl.querySelector("#rechercheGlobaleResultats");
+  const champ = modaleEl.querySelector("#rechercheGlobaleInput");
+  champ.addEventListener("input", Utils.debounce(() => { zoneResultats.innerHTML = rendreResultats(champ.value); zoneResultats.querySelectorAll("[data-resultat]").forEach(a => a.addEventListener("click", () => Modale.fermer())); }, 200));
 }
 
 /* ==================== G5. NOTION — DÉTAIL ==================== */
@@ -5031,6 +5107,8 @@ const Rappels = {
   async verifier(){
     if (!Etat.profil?.rappelsActifs) return;
     const maintenant = new Date();
+    // "Jours de semaine seulement" (§57) : 0=dimanche, 6=samedi.
+    if (Etat.profil.frequenceRappel === "semaine" && [0,6].includes(maintenant.getDay())) return;
     const hhmm = maintenant.toTimeString().slice(0,5);
     const aujourdhui = Utils.versDateISO(maintenant);
     if (hhmm === (Etat.profil.heureRappel || "18:00") && Etat.profil.dernierRappelEnvoye !== aujourdhui) {
@@ -5104,6 +5182,12 @@ const PageParametres = {
       <div class="carte mb-lg liste-parametres">
         <div class="ligne-parametre"><span>Rappels de révision</span><button class="interrupteur ${p.rappelsActifs?"actif":""}" id="pa-rappels" aria-pressed="${!!p.rappelsActifs}"></button></div>
         <div class="ligne-parametre"><span>Heure du rappel</span><input class="champ" style="width:auto" type="time" id="pa-heure" value="${p.heureRappel||"18:00"}"></div>
+        <div class="ligne-parametre"><span>Fréquence</span>
+          <select class="champ" style="width:auto" id="pa-frequence">
+            <option value="quotidien" ${(p.frequenceRappel||"quotidien")==="quotidien"?"selected":""}>Tous les jours</option>
+            <option value="semaine" ${p.frequenceRappel==="semaine"?"selected":""}>Jours de semaine seulement</option>
+          </select>
+        </div>
       </div>
 
       <h2 class="mb-sm">Compte</h2>
@@ -5122,6 +5206,7 @@ const PageParametres = {
       e.target.classList.toggle("actif", actif); e.target.setAttribute("aria-pressed", actif);
     });
     principal.querySelector("#pa-heure").addEventListener("change", async (e) => { await Store.sauvegarderProfil({ heureRappel: e.target.value }); Toast.succes("Heure de rappel mise à jour."); });
+    principal.querySelector("#pa-frequence").addEventListener("change", async (e) => { await Store.sauvegarderProfil({ frequenceRappel: e.target.value }); Toast.succes("Fréquence des rappels mise à jour."); });
     principal.querySelector("#pa-deconnexion").addEventListener("click", () => Auth.deconnecter());
     principal.querySelector("#pa-mdp").addEventListener("click", () => {
       const champs = Etat.demo
@@ -5235,6 +5320,7 @@ document.addEventListener("click", (e) => {
   if (!cible) return;
   const action = cible.dataset.action;
   if (action === "aller") { e.preventDefault(); Routeur.aller(cible.dataset.route); }
+  else if (action === "recherche-globale") ouvrirRechercheGlobale();
   else if (action === "basculer-theme") Coquille.basculerTheme();
   else if (action === "notifications") Coquille.ouvrirNotifications(cible);
   else if (action === "menu-profil") Coquille.ouvrirMenuProfil(cible);

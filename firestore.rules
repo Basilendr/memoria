@@ -57,7 +57,7 @@ service cloud.firestore {
         && boolFacultatif(d, 'rappelsActifs') && texteFacultatif(d, 'heureRappel', 10)
         && boolFacultatif(d, 'onboardingFait') && texteOuNulFacultatif(d, 'styleApprentissage', 50)
         && texteFacultatif(d, 'dateCreation', 50) && texteOuNulFacultatif(d, 'dernierJourActif', 50)
-        && texteFacultatif(d, 'dernierRappelEnvoye', 50);
+        && texteFacultatif(d, 'dernierRappelEnvoye', 50) && texteFacultatif(d, 'frequenceRappel', 20);
     }
     function matiereValide(d) {
       return texteFacultatif(d, 'nom', 100) && texteFacultatif(d, 'couleur', 100) && texteFacultatif(d, 'icone', 50);
