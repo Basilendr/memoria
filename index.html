@@ -3302,6 +3302,12 @@ const PageNotion = {
         </div>
       </div>
 
+      <div class="flex gap-sm flex-wrap mb-lg">
+        <button class="bouton bouton-primaire" data-reapprendre>${icono("livre_ouvert","icone-sm")} ${p.etapeIndex === 0 ? "Apprendre" : "Réapprendre"}</button>
+        <button class="bouton bouton-secondaire" data-reviser-maintenant>${icono("cerveau","icone-sm")} Réviser maintenant</button>
+        <button class="bouton bouton-contour" data-evaluer-notion>${icono("crayon","icone-sm")} Créer une évaluation</button>
+      </div>
+
       <div class="carte mb-lg">
         <p class="texte-petit texte-2" style="text-transform:uppercase;letter-spacing:.04em">Question</p>
         <p class="texte-semi mb-md">${Utils.echapperHtml(notion.question)}</p>
@@ -3340,6 +3346,13 @@ const PageNotion = {
       </div>
     `;
     principal.querySelector("[data-travailler-manque]")?.addEventListener("click", () => PageSession.demarrer("cible", { notions: [notion] }));
+    // "forcer" : rien n'est jamais verrouillé (§ TOUT PEUT ÊTRE REFAIT À L'INFINI) — même une
+    // notion déjà maîtrisée à 100% reste réapprenable/révisable à la demande, sans attendre
+    // qu'elle redevienne "nouvelle" ou "due". Ça ne réinitialise ni l'historique ni la
+    // maîtrise existante : c'est juste une nouvelle tentative de plus.
+    principal.querySelector("[data-reapprendre]").addEventListener("click", () => PageSession.demarrer("apprentissage", { notions: [notion], forcer: true }));
+    principal.querySelector("[data-reviser-maintenant]").addEventListener("click", () => PageSession.demarrer("reviser", { notions: [notion], forcer: true }));
+    principal.querySelector("[data-evaluer-notion]").addEventListener("click", () => { Etat.ui.selectionEvaluation = [notion.id]; Routeur.aller("evaluations/nouvelle"); });
     principal.querySelector("[data-options-notion]").addEventListener("click", (e) => {
       e.stopPropagation();
       const html = `
@@ -3493,10 +3506,14 @@ const PageDefinitions = {
       e.stopPropagation();
       const notion = Selecteurs.notion(b.dataset.optionsDef);
       const html = `
+        <button class="item-menu" data-opt="reapprendre">${icono("livre_ouvert","icone-sm")} ${notion.progression.etapeIndex === 0 ? "Apprendre" : "Réapprendre"}</button>
+        <button class="item-menu" data-opt="reviser">${icono("cerveau","icone-sm")} Réviser maintenant</button>
         <button class="item-menu" data-opt="modifier">${icono("crayon","icone-sm")} Modifier</button>
         <button class="item-menu danger" data-opt="supprimer">${icono("poubelle","icone-sm")} Supprimer</button>
       `;
       const panneau = Coquille.ouvrirMenuDeroulant(e.currentTarget, html);
+      panneau.querySelector('[data-opt="reapprendre"]').onclick = () => { panneau.remove(); PageSession.demarrer("apprentissage", { notions: [notion], forcer: true }); };
+      panneau.querySelector('[data-opt="reviser"]').onclick = () => { panneau.remove(); PageSession.demarrer("reviser", { notions: [notion], forcer: true }); };
       panneau.querySelector('[data-opt="modifier"]').onclick = () => { panneau.remove(); ouvrirEditionNotion(notion, () => PageDefinitions.rendre()); };
       panneau.querySelector('[data-opt="supprimer"]').onclick = async () => {
         panneau.remove();
@@ -3509,7 +3526,7 @@ const PageDefinitions = {
 
 /* ==================== G6. SESSION D'EXERCICES ==================== */
 const PageSession = {
-  file: [], index: 0, mode: "", coursId: null, stats: null, exerciceActuel: null, indiceNiveau: 0, decouverteVues: new Set(),
+  file: [], fileOriginale: [], index: 0, mode: "", coursId: null, stats: null, exerciceActuel: null, indiceNiveau: 0, decouverteVues: new Set(),
   etatDrill: {}, totalDrill: 0, dossierValidationCible: null, modePedagogique: false, etatSequence: {}, etapeActuelle: null,
 
   // "apprendre" (notions neuves) et "interrogation" (un dossier entier, sans tenir compte
@@ -3554,10 +3571,19 @@ const PageSession = {
     }));
   },
 
+  // Règle centrale : rien n'est jamais définitivement verrouillé. Une notion déjà maîtrisée
+  // reste "apprendre"/"apprentissage" pour les entrées BULK (découvrir de nouvelles notions,
+  // apprendre tout un paquet) — sinon la progression que ces boutons donnent n'aurait plus
+  // aucun sens. Mais quand l'utilisateur choisit explicitement UNE notion précise (bouton
+  // "Réapprendre" / "Réviser maintenant" sur sa fiche), `opts.forcer` court-circuite le
+  // filtre étapeIndex/date-due : la progression et l'historique existants ne sont jamais
+  // réinitialisés pour autant (`Revision.calculerRevisionSuivante` part toujours de l'état
+  // courant), c'est juste une nouvelle tentative, comme n'importe quelle autre session.
   demarrer(mode, opts = {}){
     let base = opts.notions || (opts.coursId ? Selecteurs.notionsDeCours(opts.coursId) : Selecteurs.toutesNotionsValidees());
     let notions;
-    if (mode === "apprendre" || mode === "apprentissage") notions = base.filter(n => n.progression.etapeIndex === 0);
+    if (opts.forcer && (mode === "apprendre" || mode === "apprentissage" || mode === "reviser")) notions = base;
+    else if (mode === "apprendre" || mode === "apprentissage") notions = base.filter(n => n.progression.etapeIndex === 0);
     else if (mode === "interrogation") notions = base;
     else if (mode === "reviser") notions = Revision.fileDeRevision(base);
     else if (mode === "rapide") notions = Revision.choisirPourDuree(opts.minutes || 10, base);
@@ -3574,6 +3600,7 @@ const PageSession = {
     // pour le drill classique tournerait des heures. On reste volontairement petit (8-10).
     const plafond = mode === "apprentissage" ? 8 : mode === "reviser" ? 10 : mode === "apprendre" ? 30 : notions.length;
     PageSession.file = Utils.melanger(notions).map(n => n.id).slice(0, plafond);
+    PageSession.fileOriginale = [...PageSession.file]; // snapshot pour "Recommencer" sur l'écran de fin (PageSession.file est vidé au fil de la session)
     PageSession.index = 0; PageSession.mode = mode; PageSession.coursId = opts.coursId || null;
     PageSession.decouverteVues = new Set();
     PageSession.modePedagogique = mode === "apprentissage";
@@ -4138,6 +4165,7 @@ const PageSession = {
       ...PageSession.stats, aRetravailler: [...new Set(PageSession.stats.aRetravailler)].filter(id => !maitrisees.has(id)),
       duree, notionsRevues, coursId: PageSession.coursId,
       estDrill, dossierValide: PageSession.mode === "interrogation",
+      mode: PageSession.mode, notionsSession: PageSession.fileOriginale,
     };
     Routeur.aller("session/resume");
   },
@@ -4165,14 +4193,23 @@ const PageResume = {
       </div>
       <p class="texte-2 texte-petit">Temps : ${Utils.formaterDuree(r.duree)}</p>
       ${r.aRetravailler.length ? `<div class="carte mt-lg" style="text-align:left"><h3 class="mb-sm">À retravailler</h3>${r.aRetravailler.map(id => { const n = Selecteurs.notion(id); return n ? `<div class="texte-petit" style="padding:.3rem 0">${Utils.echapperHtml(n.titre)}</div>` : ""; }).join("")}</div>` : ""}
-      <div class="flex gap-sm mt-lg">
+      <div class="flex gap-sm mt-lg flex-wrap">
         ${r.aRetravailler.length ? `<button class="bouton bouton-secondaire flex-1" data-reviser-erreurs>${icono("cerveau","icone-sm")} Réviser mes erreurs</button>` : ""}
+        ${r.notionsSession?.length ? `<button class="bouton bouton-contour flex-1" data-recommencer>${icono("livre_ouvert","icone-sm")} Recommencer</button>` : ""}
         <button class="bouton bouton-primaire flex-1" data-action="aller" data-route="dashboard">Retour au tableau de bord</button>
       </div>
     </div>`;
     principal.querySelector("[data-reviser-erreurs]")?.addEventListener("click", () => {
       const notions = r.aRetravailler.map(id => Selecteurs.notion(id)).filter(Boolean);
       PageSession.demarrer("cible", { notions });
+    });
+    // "Recommencer" : jamais verrouillé, même une session terminée avec 100% de réussite —
+    // relance exactement le même lot de notions, en forçant (les notions maîtrisées entre
+    // temps ne seraient sinon plus sélectionnées par les filtres habituels du mode).
+    principal.querySelector("[data-recommencer]")?.addEventListener("click", () => {
+      const notions = r.notionsSession.map(id => Selecteurs.notion(id)).filter(Boolean);
+      if (!notions.length) return Toast.erreur("Ces notions n'existent plus.");
+      PageSession.demarrer(r.mode, { notions, coursId: r.coursId, forcer: true });
     });
   },
 };
