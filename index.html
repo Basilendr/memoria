@@ -1224,6 +1224,17 @@ const Store = {
     await Store.supprimer("cours", coursId);
   },
 
+  // Supprimer UNE définition/notion précise (contrairement à supprimerCours, qui supprime
+  // tout un dossier) — jusqu'ici, aucune action de l'interface ne permettait de le faire une
+  // fois la notion validée (seul un candidat "en_attente" pouvait être rejeté en amont, sur
+  // l'écran de validation). L'historique associé part avec elle : il n'a plus de sens sans
+  // la définition qu'il décrit. Les évaluations passées qui la citaient gardent leur trace
+  // (leur `details` est un instantané, jamais relu depuis la notion), donc rien ne casse là.
+  async supprimerNotion(notionId){
+    Etat.donnees.historique = Etat.donnees.historique.filter(h => h.notionId !== notionId);
+    await Store.supprimer("notions", notionId);
+  },
+
   // Duplication complète d'un paquet CartesFacile : contrairement à "dupliquer" un cours
   // normal (qui ne recopie que le texte brut, à ré-analyser), un paquet de cartes n'a pas
   // de texte source à ré-analyser — il faut recopier directement chapitres et notions,
@@ -3136,6 +3147,7 @@ const PageCoursDetail = {
 
   attacherOptions(principal, cours){
     principal.querySelector("[data-options-cours]")?.addEventListener("click", (e) => {
+      e.stopPropagation();
       const html = `
         <button class="item-menu" data-opt="favori">${icono("etoile","icone-sm")} ${cours.favori?"Retirer des favoris":"Ajouter aux favoris"}</button>
         <button class="item-menu" data-opt="editer">${icono("crayon","icone-sm")} Modifier</button>
@@ -3233,6 +3245,43 @@ const PageValidation = {
   },
 };
 
+// Modifier ou supprimer une définition déjà validée — jusqu'ici possible nulle part une fois
+// la notion acceptée, ce qui rendait la suppression d'une définition invisible/introuvable
+// pour l'utilisateur. Réutilisé par PageNotion (détail) et PageDefinitions (liste) : même
+// modale partout, avec le bouton "Supprimer" intégré et sa confirmation (ouvrirFormulaire).
+function ouvrirEditionNotion(notion, apresAction){
+  ouvrirFormulaire({
+    titre: "Modifier la définition",
+    champs: [
+      { cle: "titre", type: "texte", label: "Terme", requis: true },
+      { cle: "reponse", type: "zone", label: "Définition", requis: true, placeholder: "La définition complète..." },
+    ],
+    valeurs: { titre: notion.titre, reponse: notion.reponse },
+    texteValider: "Enregistrer",
+    onValider: async (v) => {
+      const nouveauTitre = v.titre.trim();
+      const nouvelleReponse = v.reponse.trim();
+      if (!nouveauTitre || !nouvelleReponse) return;
+      // La question garde sa formulation d'origine (« Qu'est-ce que… », « Que signifie… »,
+      // etc.) — seul l'ancien terme y est remplacé par le nouveau, plutôt que de la
+      // reconstruire et perdre la phrase que l'analyseur avait choisie.
+      const nouvelleQuestion = notion.question?.includes(notion.titre)
+        ? notion.question.replace(notion.titre, nouveauTitre) : notion.question;
+      await Store.modifier("notions", notion.id, {
+        titre: nouveauTitre, reponse: nouvelleReponse, question: nouvelleQuestion,
+        elements: Analyseur.extraireElements(nouvelleReponse),
+      });
+      Toast.succes("Définition modifiée.");
+      apresAction?.(false);
+    },
+    onSupprimer: async () => {
+      await Store.supprimerNotion(notion.id);
+      Toast.succes("Définition supprimée.");
+      apresAction?.(true);
+    },
+  });
+}
+
 /* ==================== G5. NOTION — DÉTAIL ==================== */
 const PageNotion = {
   rendre({ id }){
@@ -3247,7 +3296,10 @@ const PageNotion = {
       <a href="#/cours/${cours?.id}" class="texte-2 texte-petit flex items-centre gap-xs mb-md">${icono("fleche_gauche","icone-xs")} ${Utils.echapperHtml(cours?.titre||"Cours")}</a>
       <div class="flex items-centre justify-entre gap-sm flex-wrap mb-lg">
         <div class="flex items-centre gap-sm">${icono(TYPES_NOTION[notion.type]?.icone||"cerveau","icone-lg")}<h1>${Utils.echapperHtml(notion.titre)}</h1></div>
-        ${badgeStatut(p.statut)}
+        <div class="flex items-centre gap-sm">
+          ${badgeStatut(p.statut)}
+          <button type="button" class="bouton-icone" data-options-notion aria-label="Options">${icono("points_verticaux")}</button>
+        </div>
       </div>
 
       <div class="carte mb-lg">
@@ -3288,6 +3340,20 @@ const PageNotion = {
       </div>
     `;
     principal.querySelector("[data-travailler-manque]")?.addEventListener("click", () => PageSession.demarrer("cible", { notions: [notion] }));
+    principal.querySelector("[data-options-notion]").addEventListener("click", (e) => {
+      e.stopPropagation();
+      const html = `
+        <button class="item-menu" data-opt="modifier">${icono("crayon","icone-sm")} Modifier</button>
+        <button class="item-menu danger" data-opt="supprimer">${icono("poubelle","icone-sm")} Supprimer</button>
+      `;
+      const panneau = Coquille.ouvrirMenuDeroulant(e.currentTarget, html);
+      panneau.querySelector('[data-opt="modifier"]').onclick = () => { panneau.remove(); ouvrirEditionNotion(notion, () => PageNotion.rendre({ id })); };
+      panneau.querySelector('[data-opt="supprimer"]').onclick = async () => {
+        panneau.remove();
+        const ok = await confirmerAction({ titre: "Supprimer cette définition ?", message: "Son historique de révisions sera aussi supprimé. Cette action est définitive.", libelleConfirmer: "Supprimer", danger: true });
+        if (ok) { await Store.supprimerNotion(notion.id); Toast.succes("Définition supprimée."); Routeur.aller(cours ? `cours/${cours.id}` : "definitions"); }
+      };
+    });
   },
 };
 
@@ -3349,8 +3415,9 @@ const PageDefinitions = {
         : carteVide("cerveau", toutes.length ? "Aucune définition ne correspond" : "Aucune définition pour l'instant", toutes.length ? "Essaie une autre recherche ou un autre filtre." : "Crée un cours ou des cartes rapides pour commencer.")}
       <div class="barre-selection-flottante ${PageDefinitions.selection.size ? "visible" : ""}">
         <span class="texte-petit texte-semi">${PageDefinitions.selection.size} sélectionnée${PageDefinitions.selection.size>1?"s":""}</span>
-        <div class="flex gap-sm">
+        <div class="flex gap-sm flex-wrap">
           <button class="bouton bouton-secondaire bouton-sm" data-travailler-oublis>${icono("cible","icone-sm")} Travailler mes oublis</button>
+          <button class="bouton bouton-danger bouton-sm" data-supprimer-selection>${icono("poubelle","icone-sm")} Supprimer</button>
           <button class="bouton bouton-primaire" data-creer-evaluation>${icono("crayon","icone-sm")} Créer une évaluation</button>
         </div>
       </div>
@@ -3367,7 +3434,10 @@ const PageDefinitions = {
         <div class="flex-1" style="min-width:0">
           <div class="flex items-centre justify-entre gap-sm flex-wrap">
             <a href="#/notion/${n.id}" class="texte-semi tronque">${Utils.echapperHtml(n.titre)}</a>
-            ${badgeStatut(p.statut)}
+            <div class="flex items-centre gap-xs">
+              ${badgeStatut(p.statut)}
+              <button type="button" class="bouton-icone" data-options-def="${n.id}" aria-label="Options">${icono("points_verticaux")}</button>
+            </div>
           </div>
           <p class="texte-2 texte-petit mt-xs" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden">${Utils.echapperHtml(n.reponse)}</p>
           <div class="flex gap-md flex-wrap texte-xs texte-2 mt-xs">
@@ -3405,6 +3475,35 @@ const PageDefinitions = {
       Etat.ui.selectionEvaluation = [...PageDefinitions.selection];
       Routeur.aller("evaluations/nouvelle");
     });
+    principal.querySelector("[data-supprimer-selection]")?.addEventListener("click", async () => {
+      const cible = notions.filter(n => PageDefinitions.selection.has(n.id));
+      const ok = await confirmerAction({
+        titre: `Supprimer ${cible.length} définition${cible.length>1?"s":""} ?`,
+        message: "Leur historique de révisions sera aussi supprimé. Cette action est définitive.",
+        libelleConfirmer: "Supprimer", danger: true,
+      });
+      if (!ok) return;
+      for (const n of cible) await Store.supprimerNotion(n.id);
+      PageDefinitions.selection.clear();
+      Toast.succes(`${cible.length} définition${cible.length>1?"s":""} supprimée${cible.length>1?"s":""}.`);
+      PageDefinitions.rendre();
+    });
+    principal.querySelectorAll("[data-options-def]").forEach(b => b.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const notion = Selecteurs.notion(b.dataset.optionsDef);
+      const html = `
+        <button class="item-menu" data-opt="modifier">${icono("crayon","icone-sm")} Modifier</button>
+        <button class="item-menu danger" data-opt="supprimer">${icono("poubelle","icone-sm")} Supprimer</button>
+      `;
+      const panneau = Coquille.ouvrirMenuDeroulant(e.currentTarget, html);
+      panneau.querySelector('[data-opt="modifier"]').onclick = () => { panneau.remove(); ouvrirEditionNotion(notion, () => PageDefinitions.rendre()); };
+      panneau.querySelector('[data-opt="supprimer"]').onclick = async () => {
+        panneau.remove();
+        const ok = await confirmerAction({ titre: "Supprimer cette définition ?", message: "Son historique de révisions sera aussi supprimé. Cette action est définitive.", libelleConfirmer: "Supprimer", danger: true });
+        if (ok) { await Store.supprimerNotion(notion.id); Toast.succes("Définition supprimée."); PageDefinitions.rendre(); }
+      };
+    }));
   },
 };
 
