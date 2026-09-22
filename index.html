@@ -174,6 +174,7 @@ img{ max-width:100%; display:block; }
 .flex-col{ display:flex; flex-direction:column; }
 .grille{ display:grid; }
 .items-centre{ align-items:center; }
+.items-debut{ align-items:flex-start; }
 .justify-entre{ justify-content:space-between; }
 .justify-centre{ justify-content:center; }
 .gap-xs{ gap:var(--espace-xs); }
@@ -196,6 +197,9 @@ img{ max-width:100%; display:block; }
 .tronque{ overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
 .icone{ width:20px; height:20px; flex-shrink:0; stroke:currentColor; fill:none; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+/* Cartes titre+description avec items-debut : icône de tête et chevron calés sur la 1ère ligne
+   du titre plutôt que centrés sur tout le bloc (qui peut passer sur 2 lignes en mobile). */
+.carte-cliquable.items-debut > .icone{ margin-top:.1rem; }
 .icone-sm{ width:16px; height:16px; }
 .icone-lg{ width:28px; height:28px; }
 
@@ -469,8 +473,10 @@ select.champ{ appearance:none; background-image:url("data:image/svg+xml,%3Csvg x
 /* -- Page cours -- */
 .entete-page-cours{ margin-bottom:var(--espace-lg); }
 .liste-chapitres{ display:flex; flex-direction:column; gap:.6rem; }
-.ligne-chapitre{ display:flex; align-items:center; gap:.9rem; padding:var(--espace-md); }
-.ligne-chapitre .barre-progression{ width:80px; }
+.ligne-chapitre{ display:flex; flex-direction:column; gap:.6rem; padding:var(--espace-md); }
+.ligne-chapitre-titre{ display:flex; align-items:center; gap:.7rem; }
+.ligne-chapitre-meta{ display:flex; align-items:center; justify-content:flex-end; gap:.6rem; }
+.ligne-chapitre-meta .barre-progression{ width:80px; }
 .bloc-lecture h2{ margin:var(--espace-xl) 0 var(--espace-sm); }
 .bloc-lecture p{ color:var(--texte); margin-bottom:var(--espace-md); line-height:1.7; }
 .encadre-notion{ border-left:3px solid var(--primaire); background:var(--primaire-clair); padding:var(--espace-md); border-radius:0 var(--rayon-sm) var(--rayon-sm) 0; margin:var(--espace-md) 0; display:flex; gap:.6rem; }
@@ -1248,6 +1254,17 @@ const Store = {
       coursId: notion.coursId, matiereId: notion.matiereId, chapitreId: notion.chapitreId,
       statutValidation: "gardee", progression: Revision.progressionInitiale(), favori: false,
     });
+  },
+
+  // Supprimer UN chapitre précis (contrairement à supprimerCours, qui supprime tout le
+  // dossier) — jusqu'ici, un chapitre devenu vide après suppression de ses définitions
+  // restait affiché indéfiniment (dans la liste du cours, et dans tous les sélecteurs de
+  // chapitre de l'app), sans aucun moyen de le retirer. Supprime aussi ce qu'il contient
+  // encore, le cas échéant — cohérent avec supprimerCours/supprimerNotion.
+  async supprimerChapitre(chapitreId){
+    const notions = Etat.donnees.notions.filter(n => n.chapitreId === chapitreId);
+    for (const n of notions) await Store.supprimerNotion(n.id);
+    await Store.supprimer("chapitres", chapitreId);
   },
 
   // Duplication complète d'un paquet CartesFacile : contrairement à "dupliquer" un cours
@@ -2476,11 +2493,11 @@ const PageDashboard = {
 
       <h2 class="mb-sm">Que dois-je faire maintenant ?</h2>
       <div class="carte mb-lg" style="border-color:var(--primaire)">
-        <div class="flex items-centre gap-md flex-wrap">
-          <div style="color:var(--primaire)">${icono(suggestion.icone,"icone-lg")}</div>
-          <div class="flex-1"><div class="texte-semi">${Utils.echapperHtml(suggestion.titre)}</div><div class="texte-2 texte-petit">${Utils.echapperHtml(suggestion.description)}</div></div>
-          <button class="bouton bouton-primaire" id="suggestionAction">${Utils.echapperHtml(suggestion.libelle)}</button>
+        <div class="flex items-centre gap-sm mb-sm">
+          <div style="color:var(--primaire);flex-shrink:0">${icono(suggestion.icone,"icone-lg")}</div>
+          <div class="flex-1" style="min-width:0"><div class="texte-semi">${Utils.echapperHtml(suggestion.titre)}</div><div class="texte-2 texte-petit">${Utils.echapperHtml(suggestion.description)}</div></div>
         </div>
+        <button class="bouton bouton-primaire bouton-large" id="suggestionAction">${Utils.echapperHtml(suggestion.libelle)}</button>
       </div>
 
       <div class="grille-stats-rapides">
@@ -2513,7 +2530,7 @@ const PageDashboard = {
           const cours = Selecteurs.coursDeMatiere(m.id);
           const notions = cours.flatMap(c => Selecteurs.notionsValideesDeCours(c.id));
           const moyenne = notions.length ? Math.round(notions.reduce((s,n) => s+n.progression.maitriseActuelle,0)/notions.length) : 0;
-          return `<a href="#/cours?matiere=${m.id}" class="carte carte-cliquable carte-matiere">${pastilleMatiereHtml(m)}<div class="flex-1"><div class="texte-semi">${Utils.echapperHtml(m.nom)}</div><div class="texte-2 texte-petit">${cours.length} cours</div></div>${anneauProgression(moyenne,{taille:40,epaisseur:4})}</a>`;
+          return `<a href="#/cours?matiere=${m.id}" class="carte carte-cliquable carte-matiere">${pastilleMatiereHtml(m)}<div class="flex-1" style="min-width:0"><div class="texte-semi tronque">${Utils.echapperHtml(m.nom)}</div><div class="texte-2 texte-petit">${cours.length} cours</div></div>${anneauProgression(moyenne,{taille:40,epaisseur:4})}</a>`;
         }).join("") || `<p class="texte-2">Aucune matière pour l'instant.</p>`}
       </div>
     `;
@@ -2588,7 +2605,7 @@ function ouvrirGestionMatieres(){
   const rendreListe = () => Etat.donnees.matieres.map(m => `
     <div class="flex items-centre gap-sm" style="padding:.5rem 0;border-bottom:1px solid var(--bordure)">
       ${pastilleMatiereHtml(m, 32)}
-      <span class="flex-1 texte-semi">${Utils.echapperHtml(m.nom)}</span>
+      <span class="flex-1 texte-semi tronque" style="min-width:0">${Utils.echapperHtml(m.nom)}</span>
       <span class="texte-2 texte-petit">${Selecteurs.coursDeMatiere(m.id).length} cours</span>
       <button class="bouton-icone" data-editer-matiere="${m.id}" aria-label="Modifier">${icono("crayon","icone-sm")}</button>
       <button class="bouton-icone" data-suppr-matiere="${m.id}" aria-label="Supprimer">${icono("poubelle","icone-sm")}</button>
@@ -3201,7 +3218,21 @@ const PageCoursDetail = {
           const notionsChap = notions.filter(n => n.chapitreId === ch.id);
           const moy = notionsChap.length ? Math.round(notionsChap.reduce((s,n)=>s+n.progression.maitriseActuelle,0)/notionsChap.length) : 0;
           const statutDominant = notionsChap.length ? (moy>=75?"vert":moy>=50?"jaune":moy>=25?"orange":"rouge") : "rouge";
-          return `<div class="carte ligne-chapitre">${icono("livre","icone-sm")}<div class="flex-1"><div class="texte-semi">${Utils.echapperHtml(ch.titre)}${ch.interrogationValideeLe ? ` ${icono("coche_cercle","icone-xs")}` : ""}</div><div class="texte-2 texte-petit">${notionsChap.length} notions</div></div>${barreProgressionHtml(moy)}<span class="texte-petit texte-semi" style="color:var(--${statutDominant==="vert"?"succes":statutDominant==="jaune"?"attention":statutDominant==="orange"?"attention":"danger"})">${moy}%</span>${chapitres.length>1 && notionsChap.length ? `<button type="button" class="bouton-icone" data-interroger-chapitre="${ch.id}" aria-label="Interroger sur ce chapitre">${icono("cible","icone-sm")}</button>` : ""}</div>`;
+          return `<div class="carte ligne-chapitre">
+            <div class="ligne-chapitre-titre">
+              ${icono("livre","icone-sm")}
+              <div class="flex-1" style="min-width:0">
+                <div class="texte-semi tronque">${Utils.echapperHtml(ch.titre)}${ch.interrogationValideeLe ? ` ${icono("coche_cercle","icone-xs")}` : ""}</div>
+                <div class="texte-2 texte-petit">${notionsChap.length} notions</div>
+              </div>
+            </div>
+            <div class="ligne-chapitre-meta">
+              ${barreProgressionHtml(moy)}
+              <span class="texte-petit texte-semi" style="color:var(--${statutDominant==="vert"?"succes":statutDominant==="jaune"?"attention":statutDominant==="orange"?"attention":"danger"})">${moy}%</span>
+              ${chapitres.length>1 && notionsChap.length ? `<button type="button" class="bouton-icone" data-interroger-chapitre="${ch.id}" aria-label="Interroger sur ce chapitre">${icono("cible","icone-sm")}</button>` : ""}
+              <button type="button" class="bouton-icone" data-options-chapitre="${ch.id}" aria-label="Options du chapitre">${icono("points_verticaux")}</button>
+            </div>
+          </div>`;
         }).join("")}
       </div>
       <h2 class="mb-sm">Notions (${notions.length})</h2>
@@ -3217,6 +3248,35 @@ const PageCoursDetail = {
       const chapitreId = b.dataset.interrogerChapitre;
       const notionsChap = notions.filter(n => n.chapitreId === chapitreId);
       PageSession.demarrer("interrogation", { notions: notionsChap, chapitreId });
+    }));
+    zone.querySelectorAll("[data-options-chapitre]").forEach(b => b.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const chapitre = chapitres.find(c => c.id === b.dataset.optionsChapitre);
+      const html = `
+        <button class="item-menu" data-opt="renommer">${icono("crayon","icone-sm")} Renommer</button>
+        <button class="item-menu danger" data-opt="supprimer">${icono("poubelle","icone-sm")} Supprimer le chapitre</button>
+      `;
+      const panneau = Coquille.ouvrirMenuDeroulant(e.currentTarget, html);
+      panneau.querySelector('[data-opt="renommer"]').onclick = () => {
+        panneau.remove();
+        ouvrirFormulaire({
+          titre: "Renommer le chapitre",
+          champs: [{ cle: "titre", type: "texte", label: "Nom du chapitre", requis: true }],
+          valeurs: { titre: chapitre.titre },
+          onValider: async (v) => { await Store.modifier("chapitres", chapitre.id, { titre: v.titre.trim() }); Toast.succes("Chapitre renommé."); PageCoursDetail.rendre({ id: cours.id }); },
+        });
+      };
+      panneau.querySelector('[data-opt="supprimer"]').onclick = async () => {
+        panneau.remove();
+        const notionsChap = notions.filter(n => n.chapitreId === chapitre.id);
+        const ok = await confirmerAction({
+          titre: "Supprimer ce chapitre ?",
+          message: notionsChap.length ? `Il contient encore ${notionsChap.length} définition${notionsChap.length>1?"s":""}, qui seront supprimées avec leur historique. Cette action est définitive.` : "Cette action est définitive.",
+          libelleConfirmer: "Supprimer", danger: true,
+        });
+        if (ok) { await Store.supprimerChapitre(chapitre.id); Toast.succes("Chapitre supprimé."); PageCoursDetail.rendre({ id: cours.id }); }
+      };
     }));
   },
 
@@ -3447,7 +3507,7 @@ const PageNotion = {
       <div class="carte">
         ${historique.length ? historique.slice(0,15).map(h => `<div class="ligne-historique">
           ${h.resultat===true ? icono("coche_cercle","icone-sm") : h.resultat==="partiel" ? icono("info","icone-sm") : icono("croix_cercle","icone-sm")}
-          <div class="flex-1"><div class="texte-petit texte-semi">${TYPES_EXERCICE[h.typeExercice]||h.typeExercice} — ${h.resultat===true?"Correct":h.resultat==="partiel"?"Partiel":"Incorrect"}</div>
+          <div class="flex-1" style="min-width:0"><div class="texte-petit texte-semi">${TYPES_EXERCICE[h.typeExercice]||h.typeExercice} — ${h.resultat===true?"Correct":h.resultat==="partiel"?"Partiel":"Incorrect"}</div>
           ${h.elementsManques?.length ? `<div class="texte-xs texte-2">Oublié : ${h.elementsManques.join(", ")}</div>` : ""}</div>
           <span class="texte-xs texte-3">${Utils.formaterDateRelative(h.date)}</span>
         </div>`).join("") : `<p class="texte-2 texte-petit">Pas encore de révision pour cette notion.</p>`}
@@ -3558,9 +3618,9 @@ const PageDefinitions = {
       <div class="flex gap-sm" style="align-items:flex-start">
         <input type="checkbox" data-case-def="${n.id}" ${cochee?"checked":""} style="width:20px;height:20px;accent-color:var(--primaire);cursor:pointer;flex-shrink:0;margin-top:.2rem">
         <div class="flex-1" style="min-width:0">
-          <div class="flex items-centre justify-entre gap-sm flex-wrap">
-            <a href="#/notion/${n.id}" class="texte-semi tronque">${Utils.echapperHtml(n.titre)}</a>
-            <div class="flex items-centre gap-xs">
+          <div class="flex items-centre gap-sm">
+            <a href="#/notion/${n.id}" class="texte-semi tronque flex-1" style="min-width:0">${Utils.echapperHtml(n.titre)}</a>
+            <div class="flex items-centre gap-xs" style="flex-shrink:0">
               ${n.favori ? icono("etoile","icone-sm") : ""}
               ${badgeStatut(p.statut)}
               <button type="button" class="bouton-icone" data-options-def="${n.id}" aria-label="Options">${icono("points_verticaux")}</button>
@@ -4454,7 +4514,7 @@ const PageExamen = {
       <div class="mt-md">${anneauProgression(pct, { taille: 100, epaisseur: 10 })}</div>
       <p class="texte-2 mt-sm">${r.correctes} / ${r.total} bonnes réponses</p>
       <div class="flex-col gap-sm mt-lg" style="text-align:left">
-        ${r.reponses.map(rep => `<div class="carte flex items-centre gap-sm">${icono(rep.resultat.correct===true?"coche_cercle":rep.resultat.correct==="partiel"?"info":"croix_cercle","icone-sm")}<span class="flex-1 texte-petit">${Utils.echapperHtml(rep.notion.titre)}</span></div>`).join("")}
+        ${r.reponses.map(rep => `<div class="carte flex items-centre gap-sm">${icono(rep.resultat.correct===true?"coche_cercle":rep.resultat.correct==="partiel"?"info":"croix_cercle","icone-sm")}<span class="flex-1 texte-petit" style="min-width:0">${Utils.echapperHtml(rep.notion.titre)}</span></div>`).join("")}
       </div>
       <div class="flex gap-sm mt-lg">
         <button class="bouton bouton-secondaire flex-1" data-erreurs>${icono("cerveau","icone-sm")} Réviser mes erreurs</button>
@@ -4529,7 +4589,7 @@ const PageEvaluationCreation = {
       ${toutes.length ? `<div class="flex-col gap-sm mb-lg">${toutes.map(n => `
         <label class="carte flex items-centre gap-sm" style="cursor:pointer">
           <input type="checkbox" data-case="${n.id}" ${PageEvaluationCreation.selectionLibre.has(n.id)?"checked":""} style="width:20px;height:20px;accent-color:var(--primaire);cursor:pointer;flex-shrink:0">
-          <span class="flex-1 texte-petit">${Utils.echapperHtml(n.titre)}</span>${badgeStatut(n.progression.statut)}
+          <span class="flex-1 texte-petit tronque" style="min-width:0">${Utils.echapperHtml(n.titre)}</span>${badgeStatut(n.progression.statut)}
         </label>`).join("")}</div>` : carteVide("cerveau", "Aucune définition disponible", "Ajoute d'abord un cours ou des cartes rapides.")}
       <button class="bouton bouton-primaire bouton-large bouton-lg" data-creer-libre>${icono("crayon","icone-sm")} Créer l'évaluation (${PageEvaluationCreation.selectionLibre.size})</button>
     `;
@@ -4633,7 +4693,7 @@ const PageEvaluationResultats = {
         ${evaluation.details.map(d => {
           const niv = NIVEAUX_RESTITUTION[d.niveau] || NIVEAUX_RESTITUTION.fragile;
           return `<div class="carte">
-            <div class="flex items-centre gap-sm mb-sm"><span>${niv.emoji}</span><span class="texte-semi flex-1">${Utils.echapperHtml(d.titre)}</span><span class="texte-2 texte-petit">${niv.libelle}</span></div>
+            <div class="flex items-centre gap-sm mb-sm"><span>${niv.emoji}</span><span class="texte-semi flex-1 tronque" style="min-width:0">${Utils.echapperHtml(d.titre)}</span><span class="texte-2 texte-petit" style="flex-shrink:0">${niv.libelle}</span></div>
             <p class="texte-2 texte-petit mb-sm" style="white-space:pre-wrap">${Utils.echapperHtml(d.reponseDonnee || "(pas de réponse)")}</p>
             <div class="liste-elements-verifies">
               ${d.elementsCorrects.map(e => `<span class="element-verifie correct">${icono("coche","icone-xs")}${Utils.echapperHtml(e)}</span>`).join("")}
@@ -4666,7 +4726,7 @@ const PageEvaluationHistorique = {
       <h2 class="mb-sm">Historique</h2>
       ${evaluations.length ? `<div class="flex-col gap-sm">${evaluations.map(e => `
         <a href="#/evaluations/resultats/${e.id}" class="carte carte-cliquable flex items-centre gap-sm">
-          <div class="flex-1">
+          <div class="flex-1" style="min-width:0">
             <div class="texte-semi">${e.reussites} / ${e.total} correctes</div>
             <div class="texte-2 texte-petit">${Utils.formaterDateCourte(e.dateCreation)} · ${Utils.formaterDuree(e.dureeSecondes)}</div>
           </div>
@@ -4890,7 +4950,7 @@ const PageCalendrier = {
         <h4 class="mb-sm mt-md">Ton plan de révision</h4>
         <div class="flex-col gap-sm mb-md">
           ${controle.plan.map(p => `<button type="button" class="carte carte-cliquable flex items-centre gap-sm" style="width:100%;text-align:left" data-lancer-phase="${p.cle}">
-            <div class="flex-1"><div class="texte-petit texte-semi">${Utils.echapperHtml(p.titre)}</div><div class="texte-xs texte-2">${Utils.formaterDateCourte(p.jour)} · ${Utils.echapperHtml(p.description)}</div></div>
+            <div class="flex-1" style="min-width:0"><div class="texte-petit texte-semi tronque">${Utils.echapperHtml(p.titre)}</div><div class="texte-xs texte-2">${Utils.formaterDateCourte(p.jour)} · ${Utils.echapperHtml(p.description)}</div></div>
             ${icono("chevron_droit","icone-sm")}
           </button>`).join("")}
         </div>
@@ -4967,9 +5027,9 @@ const PageReviser = {
       </div>
       <h2 class="mb-sm">Autres modes</h2>
       <div class="flex-col gap-sm">
-        <button class="carte carte-cliquable flex items-centre gap-sm" data-mode="apprendre">${icono("livre_ouvert")}<div class="flex-1"><div class="texte-semi">Découvrir de nouvelles notions</div><div class="texte-2 texte-petit">Notions jamais encore travaillées</div></div>${icono("chevron_droit","icone-sm")}</button>
-        <a href="#/erreurs" class="carte carte-cliquable flex items-centre gap-sm">${icono("alerte_triangle")}<div class="flex-1"><div class="texte-semi">Mes erreurs</div><div class="texte-2 texte-petit">${fragiles.length} notion${fragiles.length>1?"s":""} fragile${fragiles.length>1?"s":""}</div></div>${icono("chevron_droit","icone-sm")}</a>
-        <a href="#/examen" class="carte carte-cliquable flex items-centre gap-sm">${icono("horloge")}<div class="flex-1"><div class="texte-semi">Mode examen</div><div class="texte-2 texte-petit">Sans indice, sans correction immédiate</div></div>${icono("chevron_droit","icone-sm")}</a>
+        <button class="carte carte-cliquable flex items-debut gap-sm" data-mode="apprendre">${icono("livre_ouvert")}<div class="flex-1"><div class="texte-semi">Découvrir de nouvelles notions</div><div class="texte-2 texte-petit">Notions jamais encore travaillées</div></div>${icono("chevron_droit","icone-sm")}</button>
+        <a href="#/erreurs" class="carte carte-cliquable flex items-debut gap-sm">${icono("alerte_triangle")}<div class="flex-1"><div class="texte-semi">Mes erreurs</div><div class="texte-2 texte-petit">${fragiles.length} notion${fragiles.length>1?"s":""} fragile${fragiles.length>1?"s":""}</div></div>${icono("chevron_droit","icone-sm")}</a>
+        <a href="#/examen" class="carte carte-cliquable flex items-debut gap-sm">${icono("horloge")}<div class="flex-1"><div class="texte-semi">Mode examen</div><div class="texte-2 texte-petit">Sans indice, sans correction immédiate</div></div>${icono("chevron_droit","icone-sm")}</a>
         <a href="#/calendrier" class="carte carte-cliquable flex items-centre gap-sm">${icono("calendrier")}<div class="flex-1"><div class="texte-semi">Calendrier des révisions</div></div>${icono("chevron_droit","icone-sm")}</a>
       </div>
     `;
